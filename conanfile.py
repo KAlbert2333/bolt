@@ -481,13 +481,13 @@ class BoltConan(ConanFile):
             tc.cache_variables["CMAKE_C_FLAGS"] = flags
 
         if str(self.settings.arch) in ["armv8", "arm"]:
-            # Support CRC & NEON on ARMv8
-            flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv8.3-a"
+            # Support CRC & NEON & SVE on ARMv8
+            flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv8.3-a+sve -msve-vector-bits=256 -DSVE_BITS=256"
             tc.cache_variables["CMAKE_CXX_FLAGS"] = flags
             tc.cache_variables["CMAKE_C_FLAGS"] = flags
         elif str(self.settings.arch) in ["armv9"] and not is_msvc(self):
             # gcc 12+ https://www.phoronix.com/news/GCC-12-ARMv9-march-armv9-a
-            flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv9-a"
+            flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv9-a+sve -msve-vector-bits=256 -DSVE_BITS=256"
             tc.variables["CMAKE_C_FLAGS"] = flags
             tc.variables["CMAKE_CXX_FLAGS"] = flags
 

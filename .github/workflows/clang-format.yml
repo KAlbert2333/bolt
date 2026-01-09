@@ -68,7 +68,6 @@ jobs:
               pwd
               echo '环境变量:'
               env | sort
-              
               # 执行 clang-format-check
               echo '=== 执行 clang-format 检查 ==='
               make clang-format-check

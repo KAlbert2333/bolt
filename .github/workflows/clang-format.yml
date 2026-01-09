@@ -69,6 +69,6 @@ jobs:
             -w /workspace \
             -e GITHUB_RUNNER_TOKEN=$GITHUB_RUNNER_TOKEN \
             -e ORGANIZATION_NAME=$ORGANIZATION_NAME \
-  	        -e REPOSITORY_NAME=$REPOSITORY_NAME \
+            -e REPOSITORY_NAME=$REPOSITORY_NAME \
             localhost:5000/bolt-ci:20251217 \
             "git clone https://x-access-token:$GITHUB_RUNNER_TOKEN@github.com/$ORGANIZATION_NAME/$REPOSITORY_NAME.git . && git checkout ${{ github.event_name == "workflow_dispatch" && github.event.inputs.target-ref || github.ref }} && make clang-format-check"

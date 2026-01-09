@@ -12,9 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -87,7 +87,7 @@ void setTimestampOrNull(
     FlatVector<Timestamp>* result) {
   if (timestamp.has_value()) {
     auto timeZone = timeZoneVector->valueAt<StringView>(row);
-    auto tzID = util::getTimeZoneID(std::string_view(timeZone));
+    auto tzID = tz::getTimeZoneID(std::string_view(timeZone));
     (*timestamp).toGMT(tzID);
     result->set(row, *timestamp);
   } else {
@@ -135,7 +135,7 @@ class MakeTimestampFunction : public exec::VectorFunction {
       if (args[6]->isConstantEncoding()) {
         auto tz =
             args[6]->asUnchecked<ConstantVector<StringView>>()->valueAt(0);
-        auto constantTzID = util::getTimeZoneID(std::string_view(tz));
+        auto constantTzID = tz::getTimeZoneID(std::string_view(tz));
         rows.applyToSelected([&](vector_size_t row) {
           auto timestamp = makeTimeStampFromDecodedArgs(
               row, year, month, day, hour, minute, micros);
@@ -198,7 +198,7 @@ std::shared_ptr<exec::VectorFunction> createMakeTimestampFunction(
   BOLT_USER_CHECK(
       !sessionTzName.empty(),
       "make_timestamp requires session time zone to be set.")
-  const auto sessionTzID = util::getTimeZoneID(sessionTzName);
+  const auto sessionTzID = tz::getTimeZoneID(sessionTzName);
 
   const auto& secondsType = inputArgs[5].type;
   BOLT_USER_CHECK(

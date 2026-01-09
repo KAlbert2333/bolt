@@ -12,9 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -118,7 +118,7 @@ TEST(TimeUtilsTest, adjustEpoch) {
 }
 
 TEST(TimeUtilsTest, truncateTimestamp) {
-  auto* timezone = ::date::locate_zone("GMT");
+  auto* timezone = tz::locateZone("GMT");
 
   EXPECT_EQ(
       Timestamp(0, 0),
@@ -181,7 +181,7 @@ TEST(TimeUtilsTest, truncateTimestamp) {
       truncateTimestamp(
           Timestamp(998'474'645, 321'001'234), DateTimeUnit::kYear, timezone));
 
-  auto* timezone1 = ::date::locate_zone("America/Los_Angeles");
+  auto* timezone1 = tz::locateZone("America/Los_Angeles");
   EXPECT_EQ(
       Timestamp(0, 0),
       truncateTimestamp(Timestamp(0, 0), DateTimeUnit::kSecond, timezone1));

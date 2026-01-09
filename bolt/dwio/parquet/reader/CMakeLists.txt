@@ -12,7 +12,7 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 # --------------------------------------------------------------------------
-# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+# Copyright (c) ByteDance Ltd. and/or its affiliates.
 # SPDX-License-Identifier: Apache-2.0
 #
 # This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -67,7 +67,7 @@ add_library(bolt_dwio_native_parquet_reader_cli STATIC ParquetReaderCli.cpp)
 
 target_link_libraries(bolt_dwio_native_parquet_reader_cli
         bolt_dwio_parquet_reader
-        bolt_dwio_arrow_parquet_writer_lib
+        bolt_dwio_parquet_arrow_lib
         bolt_dwio_native_parquet_reader
         bolt_dwio_common
         bolt_hdfs)

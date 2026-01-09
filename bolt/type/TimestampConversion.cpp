@@ -12,10 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -1028,7 +1027,7 @@ bool matchSubstring(
   return targets.find(sub) != targets.end();
 }
 
-std::optional<std::pair<Timestamp, int64_t>> fromTimestampWithTimezoneString(
+std::optional<std::pair<Timestamp, int16_t>> fromTimestampWithTimezoneString(
     const char* str,
     size_t len) {
   size_t pos;
@@ -1038,7 +1037,7 @@ std::optional<std::pair<Timestamp, int64_t>> fromTimestampWithTimezoneString(
     return std::nullopt;
   }
 
-  int64_t timezoneID = -1;
+  int16_t timezoneID = -1;
 
   if (pos < len && characterIsSpace(str[pos])) {
     pos++;
@@ -1065,7 +1064,7 @@ std::optional<std::pair<Timestamp, int64_t>> fromTimestampWithTimezoneString(
       }
     }
 
-    if ((timezoneID = util::getTimeZoneID(timezone, false)) == -1) {
+    if ((timezoneID = tz::getTimeZoneID(timezone, false)) == -1) {
       return std::nullopt;
     }
 

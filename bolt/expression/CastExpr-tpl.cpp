@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+ * Copyright (c) ByteDance Ltd. and/or its affiliates
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,8 @@
 #include "bolt/functions/lib/string/StringImpl.h"
 #include "bolt/type/Conversions.h"
 #include "bolt/type/FloatingDecimal.h"
+#include "bolt/type/tz/TimeZoneMap.h"
+
 using namespace bytedance::bolt;
 using namespace bytedance::bolt::exec;
 using namespace bytedance::bolt::exec::CastUtils;
@@ -350,7 +352,7 @@ class Converter {
     const auto& queryConfig = context.execCtx()->queryCtx()->queryConfig();
     auto sessionTzName = queryConfig.sessionTimezone();
     if (queryConfig.adjustTimestampToTimezone() && !sessionTzName.empty()) {
-      timeZone_ = ::date::locate_zone(sessionTzName);
+      timeZone_ = tz::locateZone(sessionTzName);
     }
   }
 
@@ -763,7 +765,7 @@ class Converter {
   int fromDecimalMaxSize_ = 0;
   int toPrecision_ = 0;
   int toScale_ = 0;
-  const ::date::time_zone* timeZone_ = nullptr;
+  const tz::TimeZone* timeZone_ = nullptr;
 
   bool canAsInlinedStr_ = false;
 };

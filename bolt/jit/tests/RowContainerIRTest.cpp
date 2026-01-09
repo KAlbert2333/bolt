@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+ * Copyright (c) ByteDance Ltd. and/or its affiliates
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 #ifdef ENABLE_BOLT_JIT
 
-#include <dwio/parquet/writer/arrow/util/safe-math.h>
+#include <dwio/parquet/arrow/util/safe-math.h>
 #include <type/Type.h>
 
 #include <gtest/gtest.h>

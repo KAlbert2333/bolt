@@ -12,9 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -35,14 +35,14 @@
 #include <arrow/record_batch.h>
 #include <arrow/table.h>
 #include <arrow/util/thread_pool.h>
-#include <dwio/parquet/writer/arrow/Types.h>
 #include <parquet/arrow/writer.h> // @manual
 #include <parquet/properties.h>
 #include "bolt/common/config/Config.h"
 #include "bolt/core/QueryConfig.h"
+#include "bolt/dwio/parquet/arrow/Properties.h"
+#include "bolt/dwio/parquet/arrow/Types.h"
+#include "bolt/dwio/parquet/arrow/Writer.h"
 #include "bolt/dwio/parquet/writer/ArrowDataBufferSink.h"
-#include "bolt/dwio/parquet/writer/arrow/Properties.h"
-#include "bolt/dwio/parquet/writer/arrow/Writer.h"
 #include "bolt/exec/MemoryReclaimer.h"
 #include "bolt/vector/arrow/Bridge.h"
 

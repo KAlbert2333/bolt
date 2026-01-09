@@ -12,9 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -163,15 +163,11 @@ void HashAggregation::initialize() {
         operatorCtx_->operatorId(), rowbasedSpillMode);
   }
 
-  if (isDistinct_) {
-    addRuntimeStat("isDistinctAggregation", RuntimeCounter(1));
-    for (auto i = 0; i < hashers.size(); ++i) {
-      identityProjections_.emplace_back(hashers[i]->channel(), i);
-    }
-  } else {
-    addRuntimeStat("isDistinctAggregation", RuntimeCounter(0));
-  }
+  addRuntimeStat("isDistinctAggregation", RuntimeCounter(isDistinct_));
 
+  for (auto i = 0; i < hashers.size(); ++i) {
+    identityProjections_.emplace_back(hashers[i]->channel(), i);
+  }
   std::optional<column_index_t> groupIdChannel;
   if (aggregationNode_->groupId().has_value()) {
     groupIdChannel = outputType_->getChildIdxIfExists(

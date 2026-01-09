@@ -12,10 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -197,7 +196,7 @@ inline Timestamp fromTimestampString(const StringView& str, bool* nullOutput) {
 ///
 /// -1 means no timezone information was found. return nullopt in case of
 /// parsing errors.
-std::optional<std::pair<Timestamp, int64_t>> fromTimestampWithTimezoneString(
+std::optional<std::pair<Timestamp, int16_t>> fromTimestampWithTimezoneString(
     const char* buf,
     size_t len);
 

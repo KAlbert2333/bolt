@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # --------------------------------------------------------------------------
-# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+# Copyright (c) ByteDance Ltd. and/or its affiliates.
 # SPDX-License-Identifier: Apache-2.0
 #
 # This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -29,6 +29,7 @@
 if(BOLT_ENABLE_PARQUET)
   add_subdirectory(thrift)
   add_subdirectory(reader)
+  add_subdirectory(arrow)
   add_subdirectory(writer)
   if(${BOLT_BUILD_TESTING})
     add_subdirectory(fuzzer)

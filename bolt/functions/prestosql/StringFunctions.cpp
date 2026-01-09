@@ -12,10 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -451,7 +450,7 @@ class PrintfFunction : public exec::VectorFunction {
 
  private:
   void setTimezone(const core::QueryConfig& config) {
-    const ::date::time_zone* sessionTimeZone = getTimeZoneFromConfig(config);
+    const tz::TimeZone* sessionTimeZone = getTimeZoneFromConfig(config);
     if (sessionTimeZone) {
       time_zone_ = sessionTimeZone;
     }
@@ -780,7 +779,7 @@ class PrintfFunction : public exec::VectorFunction {
     return false;
   }
 
-  const ::date::time_zone* time_zone_;
+  const tz::TimeZone* time_zone_;
   int64_t sessionTzOffsetInSeconds_{0};
   constexpr static TimestampToStringOptions timestampToStringOptions_ =
       TimestampToStringOptions{

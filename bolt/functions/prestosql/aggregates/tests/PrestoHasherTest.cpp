@@ -12,10 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -422,7 +421,7 @@ TEST_F(PrestoHasherTest, timestampWithTimezone) {
           if (timestampWithTimeZone.has_value()) {
             auto timestamp = timestampWithTimeZone.value().first;
             auto tz = timestampWithTimeZone.value().second;
-            const int16_t tzid = util::getTimeZoneID(tz);
+            const int16_t tzid = tz::getTimeZoneID(tz);
             timeZoneIds.push_back(tzid);
             timestamps.push_back(timestamp);
             bits::clearNull(rawNulls, i);

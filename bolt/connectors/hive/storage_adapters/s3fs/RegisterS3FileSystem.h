@@ -12,10 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -30,10 +29,29 @@
  */
 
 #pragma once
+
+#include <functional>
+#include <memory>
+#include <string>
+
+namespace Aws::Auth {
+// Forward-declare the AWSCredentialsProvider class from the AWS SDK.
+class AWSCredentialsProvider;
+} // namespace Aws::Auth
+
+namespace bytedance::bolt::config {
+class ConfigBase;
+}
+
 namespace bytedance::bolt::filesystems {
 
+using CacheKeyFn = std::function<
+    std::string(std::shared_ptr<const config::ConfigBase>, std::string_view)>;
+
 // Register the S3 filesystem.
-void registerS3FileSystem();
+void registerS3FileSystem(CacheKeyFn cacheKeyFunc = nullptr);
+
+void registerS3Metrics();
 
 /// Teardown the AWS SDK C++.
 /// Bolt users need to manually invoke this before exiting an application.
@@ -44,5 +62,15 @@ void registerS3FileSystem();
 /// This could lead to a segmentation fault during the program exit.
 /// Ref https://github.com/aws/aws-sdk-cpp/issues/1550#issuecomment-1412601061
 void finalizeS3FileSystem();
+
+class S3Config;
+
+using AWSCredentialsProviderFactory =
+    std::function<std::shared_ptr<Aws::Auth::AWSCredentialsProvider>(
+        const S3Config& config)>;
+
+void registerAWSCredentialsProvider(
+    const std::string& providerName,
+    const AWSCredentialsProviderFactory& provider);
 
 } // namespace bytedance::bolt::filesystems

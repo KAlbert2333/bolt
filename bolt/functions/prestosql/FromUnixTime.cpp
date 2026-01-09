@@ -12,9 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -65,7 +65,7 @@ class FromUnixtimeFunction : public exec::VectorFunction {
     if (timezoneNames->isConstantMapping()) {
       auto timezoneName = timezoneNames->valueAt<StringView>(rows.begin());
 
-      int16_t timezoneId = util::getTimeZoneID(
+      int16_t timezoneId = tz::getTimeZoneID(
           std::string_view(timezoneName.data(), timezoneName.size()));
       timezones = std::make_shared<ConstantVector<int16_t>>(
           pool, size, false /*isNull*/, SMALLINT(), std::move(timezoneId));
@@ -82,7 +82,7 @@ class FromUnixtimeFunction : public exec::VectorFunction {
         rawTimestamps[row] = toMillis(unixtimes->valueAt<double>(row));
 
         auto timezoneName = timezoneNames->valueAt<StringView>(row);
-        rawTimezones[row] = util::getTimeZoneID(
+        rawTimezones[row] = tz::getTimeZoneID(
             std::string_view(timezoneName.data(), timezoneName.size()));
       });
     }

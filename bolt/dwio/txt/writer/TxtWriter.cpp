@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+ * Copyright (c) ByteDance Ltd. and/or its affiliates
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 #include <arrow/buffer.h>
 #include <arrow/c/bridge.h>
 #include <arrow/csv/api.h>
-#include "bolt/dwio/parquet/writer/arrow/Exception.h"
+#include "bolt/dwio/parquet/arrow/Exception.h"
 #include "bolt/exec/MemoryReclaimer.h"
 
 namespace bytedance::bolt::txt::writer {

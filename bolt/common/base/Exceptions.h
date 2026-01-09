@@ -12,10 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -342,6 +341,17 @@ DECLARE_CHECK_FAIL_TEMPLATES(::bytedance::bolt::BoltRuntimeError);
       ::bytedance::bolt::error_source::kErrorSourceRuntime.c_str(), \
       ::bytedance::bolt::error_code::kInvalidState.c_str(),         \
       /* isRetriable */ false,                                      \
+      ##__VA_ARGS__)
+
+/// Throws BoltRuntimeError when functions receive input values out of the
+/// supported range. This should only be used when we want to force TRY() to not
+/// suppress the error.
+#define BOLT_FAIL_UNSUPPORTED_INPUT_UNCATCHABLE(...)                       \
+  _BOLT_THROW(                                                             \
+      ::bytedance::bolt::BoltRuntimeError,                                 \
+      ::bytedance::bolt::error_source::kErrorSourceRuntime.c_str(),        \
+      ::bytedance::bolt::error_code::kUnsupportedInputUncatchable.c_str(), \
+      /* isRetriable */ false,                                             \
       ##__VA_ARGS__)
 
 DECLARE_CHECK_FAIL_TEMPLATES(::bytedance::bolt::BoltUserError);

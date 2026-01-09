@@ -84,7 +84,7 @@ jobs:
       run: |
         make unittest_${{ matrix.build_type }}
 
-  benchmarks-build:
+  benchmarks-build2:
       needs: changes
       if: ${{ needs.changes.outputs.source_changed == 'true' }}
       runs-on: [ self-hosted, medium ]

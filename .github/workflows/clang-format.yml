@@ -54,8 +54,6 @@ jobs:
             !bolt/**/*.md
 
   format-check:
-    needs: changes
-    if: ${{ needs.changes.outputs.source_changed == 'true' }}
     runs-on: [ self-hosted, small ]
     steps:
       - name: Checkout code

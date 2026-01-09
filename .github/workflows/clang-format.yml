@@ -60,23 +60,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-      
-      - name: Enter container and run checks
+        with:
+          # 兼容 workflow_dispatch 和 push 两种触发方式
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target-ref || github.ref }}
+
+      - name: clang-format check
         run: |
           docker run --rm \
-            -v $(pwd):/workspace \
+            -v "$(pwd)":/workspace \
             -w /workspace \
             --user root \
-            --entrypoint /bin/bash \
             bolt-registry:5000/bolt-ci:20251217 \
-            -c "
-              # 进入容器后执行的第一个命令
-              echo '=== 进入容器环境 ==='
-              echo '当前目录:'
-              pwd
-              echo '环境变量:'
-              env | sort
-              # 执行 clang-format-check
-              echo '=== 执行 clang-format 检查 ==='
-              make clang-format-check
-            "
+            make clang-format-check

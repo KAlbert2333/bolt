@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # --------------------------------------------------------------------------
-# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+# Copyright (c) ByteDance Ltd. and/or its affiliates.
 # SPDX-License-Identifier: Apache-2.0
 #
 # This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -25,17 +25,14 @@
 # This modified file is released under the same license.
 # --------------------------------------------------------------------------
 
-
-add_subdirectory(arrow)
-
 add_library(bolt_dwio_arrow_parquet_writer Writer.cpp ArrowDataBufferSink.cpp)
 
 find_package(Snappy CONFIG REQUIRED)
 
 target_link_libraries(
   bolt_dwio_arrow_parquet_writer
-  bolt_dwio_arrow_parquet_writer_lib
-  bolt_dwio_arrow_parquet_writer_util_lib
+  bolt_dwio_parquet_arrow_lib
+  bolt_dwio_parquet_arrow_util_lib
   bolt_dwio_common
   bolt_arrow_bridge
   arrow::arrow

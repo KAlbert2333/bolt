@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+ * Copyright (c) ByteDance Ltd. and/or its affiliates
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -2475,7 +2475,7 @@ TEST_F(SparkSqlDateTimeFunctionsTest, toUtcTimestamp) {
       toUtcTimestamp("2015-01-24 05:30:00", "Asia/Kolkata"));
   BOLT_ASSERT_THROW(
       toUtcTimestamp("2015-01-24 00:00:00", "Asia/Ooty"),
-      "Asia/Ooty not found in timezone database");
+      "Unknown time zone: 'Asia/Ooty");
 }
 
 TEST_F(SparkSqlDateTimeFunctionsTest, fromUtcTimestamp) {
@@ -2505,7 +2505,7 @@ TEST_F(SparkSqlDateTimeFunctionsTest, fromUtcTimestamp) {
       fromUtcTimestamp("2015-01-24 00:00:00", "Asia/Kolkata"));
   BOLT_ASSERT_THROW(
       fromUtcTimestamp("2015-01-24 00:00:00", "Asia/Ooty"),
-      "Asia/Ooty not found in timezone database");
+      "Unknown time zone: 'Asia/Ooty");
 }
 
 TEST_F(SparkSqlDateTimeFunctionsTest, toFromUtcTimestamp) {
@@ -2535,7 +2535,7 @@ TEST_F(SparkSqlDateTimeFunctionsTest, toFromUtcTimestamp) {
       toFromUtcTimestamp("2015-01-24 00:00:00", "Asia/Kolkata"));
   BOLT_ASSERT_THROW(
       toFromUtcTimestamp("2015-01-24 00:00:00", "Asia/Ooty"),
-      "Asia/Ooty not found in timezone database");
+      "Unknown time zone: 'Asia/Ooty");
 }
 
 TEST_F(SparkSqlDateTimeFunctionsTest, dateFromUnixDate) {

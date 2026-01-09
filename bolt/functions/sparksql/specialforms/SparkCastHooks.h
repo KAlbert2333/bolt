@@ -12,10 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -34,6 +33,8 @@
 
 #include "bolt/expression/CastHooks.h"
 #include "bolt/expression/EvalCtx.h"
+#include "bolt/type/tz/TimeZoneMap.h"
+
 namespace bytedance::bolt::functions::sparksql {
 
 // This class provides cast hooks following Spark semantics.
@@ -45,7 +46,7 @@ class SparkCastHooks : public exec::CastHooks {
             config.isSparkLegacyCastComplexTypesToStringEnabled() != "false") {
     const auto sessionTzName = config.sessionTimezone();
     if (config.adjustTimestampToTimezone() && !sessionTzName.empty()) {
-      sessionTimezone_ = ::date::locate_zone(sessionTzName);
+      sessionTimezone_ = tz::locateZone(sessionTzName);
     } else {
       sessionTimezone_ = nullptr;
     }
@@ -82,6 +83,6 @@ class SparkCastHooks : public exec::CastHooks {
 
  private:
   bool legacyCastComplexTypeToString_;
-  const ::date::time_zone* sessionTimezone_;
+  const tz::TimeZone* sessionTimezone_;
 };
 } // namespace bytedance::bolt::functions::sparksql

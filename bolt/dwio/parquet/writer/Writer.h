@@ -12,10 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- */
-
-/* --------------------------------------------------------------------------
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+ *
+ * --------------------------------------------------------------------------
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  * SPDX-License-Identifier: Apache-2.0
  *
  * This file has been modified by ByteDance Ltd. and/or its affiliates on
@@ -40,9 +39,9 @@
 #include "bolt/dwio/common/Options.h"
 #include "bolt/dwio/common/Writer.h"
 #include "bolt/dwio/common/WriterFactory.h"
-#include "bolt/dwio/parquet/writer/arrow/Properties.h"
-#include "bolt/dwio/parquet/writer/arrow/Types.h"
-#include "bolt/dwio/parquet/writer/arrow/util/Compression.h"
+#include "bolt/dwio/parquet/arrow/Properties.h"
+#include "bolt/dwio/parquet/arrow/Types.h"
+#include "bolt/dwio/parquet/arrow/util/Compression.h"
 #include "bolt/vector/ComplexVector.h"
 #include "bolt/vector/arrow/Bridge.h"
 namespace bytedance::bolt::parquet {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+ * Copyright (c) ByteDance Ltd. and/or its affiliates
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@
 #include "bolt/dwio/common/Statistics.h"
 #include "bolt/dwio/common/tests/utils/DataSetBuilder.h"
 #include "bolt/dwio/parquet/RegisterParquetReader.h"
+#include "bolt/dwio/parquet/arrow/Properties.h"
 #include "bolt/dwio/parquet/reader/ParquetReader.h"
 #include "bolt/dwio/parquet/writer/Writer.h"
-#include "bolt/dwio/parquet/writer/arrow/Properties.h"
 #include "bolt/exec/tests/utils/TempDirectoryPath.h"
 
 #include <folly/Benchmark.h>

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+# Copyright (c) ByteDance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -287,6 +287,9 @@ class BoltConan(ConanFile):
         if self.options.get_safe("enable_jit"):
             self.requires("llvm-core/13.0.0")
 
+        if self.options.get_safe("enable_s3"):
+            self.requires("aws-sdk-cpp/1.11.692", transitive_headers=True, transitive_libs=True)
+            self.requires("aws-c-common/0.12.5", force=True)
         self.requires("simdjson/3.12.3", transitive_headers=True)
         self.requires("sonic-cpp/1.0.2", transitive_headers=True, transitive_libs=True)
         self.requires(
@@ -356,6 +359,8 @@ class BoltConan(ConanFile):
         self.requires("utf8proc/2.11.0", transitive_headers=True, transitive_libs=True)
         self.requires("date/3.0.4-bolt", transitive_headers=True, transitive_libs=True)
         self.requires("libbacktrace/cci.20210118")
+        if self.options.get_safe("spark_compatible"):
+            self.requires("celeborn-cpp-client/main-20251212")
 
     def build_requirements(self):
         self.tool_requires("m4/1.4.19")
@@ -391,6 +396,10 @@ class BoltConan(ConanFile):
 
         if not self.options.get_safe("enable_test"):
             self.options.enable_coverage = False
+
+        if self.options.get_safe("enable_s3"):
+            s3_opt = self.options["aws-sdk-cpp/*"]
+            setattr(s3_opt, 'text-to-speech', False)
 
         arrow_simd_level = "default"
         if str(self.settings.arch) in ["x86", "x86_64"]:
@@ -751,6 +760,7 @@ class BoltConan(ConanFile):
                 "liburing::liburing",
                 "zlib::zlib",
                 "libbacktrace::libbacktrace",
+                "aws-c-common::aws-c-common",
             ]
         )
 

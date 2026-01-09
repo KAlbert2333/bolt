@@ -208,15 +208,15 @@ struct BitMask<T, A, 4> {
   }
 #endif
 
-//#if XSIMD_WITH_SVE
-//  static int toBitMask(xsimd::batch_bool<T, A> mask, const xsimd::sve&) {
-//    svuint32_t onc = svdup_u32(1);
-//    svuint32_t inv = svindex_u32(0, 1);
-//    svuint32_t pow = svlsl_m(svptrue_b32(), onc, inv);
-//    uint8_t nullsres = svaddv(mask, pow);
-//    return nullsres;
-//  }
-//#endif
+#if XSIMD_WITH_SVE
+  static int toBitMask(xsimd::batch_bool<T, A> mask, const xsimd::sve&) {
+    svuint32_t onc = svdup_u32(1);
+    svuint32_t inv = svindex_u32(0, 1);
+    svuint32_t pow = svlsl_m(svptrue_b32(), onc, inv);
+    uint8_t nullsres = svaddv(mask, pow);
+    return nullsres;
+  }
+#endif
 
   static int toBitMask(xsimd::batch_bool<T, A> mask, const xsimd::generic&) {
     return genericToBitMask(mask);

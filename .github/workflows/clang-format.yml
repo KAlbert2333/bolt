@@ -21,9 +21,17 @@ name: clang-format
 
 on:
   push:
-    branches: [ main ]
+    branches: [ Arm-CI ]
   pull_request:
-    branches: [ main ]
+    branches: [ Arm-CI ]
+  workflow_dispatch:
+    # 可选：设置输入参数，方便在界面上选择要检查的分支
+    inputs:
+      target-ref:
+        description: '要检查的Git引用 (分支、标签或提交)'
+        required: true
+        default: 'Arm-CI'
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

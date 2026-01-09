@@ -1,0 +1,56 @@
+name: clang-format
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: [ self-hosted, small ]
+    outputs:
+      source_changed: ${{ steps.filter.outputs.source_changed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: filter
+        uses: ./.github/actions/changes-check
+        with:
+          filters: |
+            bolt/**
+            !bolt/**/*.md
+
+  format-check:
+    needs: changes
+    if: ${{ needs.changes.outputs.source_changed == 'true' }}
+    runs-on: [ self-hosted, small ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      
+      - name: Enter container and run checks
+        run: |
+          docker run --rm \
+            -v $(pwd):/workspace \
+            -w /workspace \
+            --user root \
+            --entrypoint /bin/bash \
+            bolt-registry:5000/bolt-ci:20251217 \
+            -c "
+              # 进入容器后执行的第一个命令
+              echo '=== 进入容器环境 ==='
+              echo '当前目录:'
+              pwd
+              echo '环境变量:'
+              env | sort
+              
+              # 执行 clang-format-check
+              echo '=== 执行 clang-format 检查 ==='
+              make clang-format-check
+            "

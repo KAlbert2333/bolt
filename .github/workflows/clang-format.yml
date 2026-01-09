@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on:  [ self-hosted, small ]
+    runs-on: [ self-hosted, small ]
     outputs:
       source_changed: ${{ steps.filter.outputs.source_changed }}
     steps:
@@ -44,6 +44,7 @@ jobs:
           filters: |
             bolt/**
             !bolt/**/*.md
+
   format-check:
     needs: changes
     if: ${{ needs.changes.outputs.source_changed == 'true' }}
@@ -59,7 +60,7 @@ jobs:
             -w /workspace \
             --user root \
             --entrypoint /bin/bash \
-            bolt-ci:20251217 \
+            bolt-registry:5000/bolt-ci:20251217 \
             -c "
               # 进入容器后执行的第一个命令
               echo '=== 进入容器环境 ==='
@@ -71,3 +72,4 @@ jobs:
               # 执行 clang-format-check
               echo '=== 执行 clang-format 检查 ==='
               make clang-format-check
+            "

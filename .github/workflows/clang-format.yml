@@ -68,5 +68,5 @@ jobs:
             -v "$(pwd)":/workspace \
             -w /workspace \
             --user root \
-            bolt-registry:5000/bolt-ci:20251217 \
+            bolt-ci:20251217 \
             make clang-format-check

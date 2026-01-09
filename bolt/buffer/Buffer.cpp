@@ -29,6 +29,7 @@
  */
 
 #include "bolt/buffer/Buffer.h"
+
 namespace bytedance::bolt {
 
 namespace {

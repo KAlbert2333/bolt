@@ -62,6 +62,13 @@ jobs:
           # 兼容 workflow_dispatch 和 push 两种触发方式
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target-ref || github.ref }}
 
+      - name: Get latest commit
+        id: latest-commit
+        run: |
+          # 获取当前分支的最新提交
+          LATEST_COMMIT=$(git rev-parse HEAD)
+          echo "latest_commit=$LATEST_COMMIT" >> $GITHUB_OUTPUT
+
       - name: clang-format check
         run: |
           docker run --user root  \
@@ -70,5 +77,6 @@ jobs:
             -e GITHUB_RUNNER_TOKEN=$GITHUB_RUNNER_TOKEN \
             -e ORGANIZATION_NAME=$ORGANIZATION_NAME \
             -e REPOSITORY_NAME=$REPOSITORY_NAME \
+            -e LATEST_COMMIT=${{ steps.latest-commit.outputs.latest_commit }} \
             localhost:5000/bolt-ci:20251217 \
-            "git clone https://x-access-token:$GITHUB_RUNNER_TOKEN@github.com/$ORGANIZATION_NAME/$REPOSITORY_NAME.git . && make clang-format-check"
+            "git clone https://x-access-token:$GITHUB_RUNNER_TOKEN@github.com/$ORGANIZATION_NAME/$REPOSITORY_NAME.git . && git checkout $LATEST_COMMIT && make clang-format-check"

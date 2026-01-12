@@ -24,14 +24,6 @@ on:
     branches: [ Arm-CI ]
   pull_request:
     branches: [ Arm-CI ]
-  workflow_dispatch:
-    # 可选：设置输入参数，方便在界面上选择要检查的分支
-    inputs:
-      target-ref:
-        description: '要检查的Git引用 (分支、标签或提交)'
-        required: true
-        default: 'Arm-CI'
-        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,27 +47,13 @@ jobs:
 
   format-check:
     runs-on: [ self-hosted, physical ]
+    container: 
+      image: bolt-registry:5000/bolt-ci:20251217
+      options: --user root
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          # 兼容 workflow_dispatch 和 push 两种触发方式
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target-ref || github.ref }}
+    - name: Checkout code
+      uses: actions/checkout@v6
 
-      - name: Get latest commit
-        id: latest-commit
-        run: |
-          # 获取当前分支的最新提交
-          LATEST_COMMIT=$(git rev-parse HEAD)
-          echo "latest_commit=$LATEST_COMMIT" >> $GITHUB_OUTPUT
-
-      - name: clang-format check
-        run: |
-          docker run --user root  \
-            -w /workspace \
-            -e GITHUB_RUNNER_TOKEN=$GITHUB_RUNNER_TOKEN \
-            -e ORGANIZATION_NAME=$ORGANIZATION_NAME \
-            -e REPOSITORY_NAME=$REPOSITORY_NAME \
-            -e LATEST_COMMIT=${{ steps.latest-commit.outputs.latest_commit }} \
-            localhost:5000/bolt-ci:20251217 \
-            "git clone https://x-access-token:$GITHUB_RUNNER_TOKEN@github.com/$ORGANIZATION_NAME/$REPOSITORY_NAME.git . && git checkout $LATEST_COMMIT && make clang-format-check"
+    - name: clang-format check
+      run: |
+        make clang-format-check

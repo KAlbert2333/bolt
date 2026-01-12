@@ -48,7 +48,7 @@ jobs:
   format-check:
     runs-on: [ self-hosted, physical ]
     container: 
-      image: bolt-registry:5000/bolt-ci:20251217
+      image: localhost:5000/bolt-ci:20251217
       options: --user root
     steps:
     - name: Checkout code

@@ -36,7 +36,7 @@ env:
 
 jobs:
   changes:
-    runs-on:  [ self-hosted, small ]
+    runs-on:  [ self-hosted, physical ]
     outputs:
       source_changed: ${{ steps.filter.outputs.source_changed }}
     steps:
@@ -55,15 +55,15 @@ jobs:
             scripts/**
   build-test:
     needs: changes
-    runs-on: [ self-hosted, medium ]
+    runs-on: [ self-hosted, physical ]
     container: 
-      image: bolt-registry:5000/bolt-ci:20251217
+      image: localhost:5000/bolt-ci:20251217
       options: --user root
       volumes:
         - /data/ccache-data:/data/ccache-data
     services:
       conanserver:
-        image: bolt-registry:5000/conan-server:latest
+        image: localhost:5000/conan-server:latest
         volumes:
           - /data/conan-server-data:/var/conan/data
     strategy:
@@ -87,15 +87,15 @@ jobs:
   benchmarks-build:
       needs: changes
       if: ${{ needs.changes.outputs.source_changed == 'true' }}
-      runs-on: [ self-hosted, medium ]
+      runs-on: [ self-hosted, physical ]
       container: 
-        image: bolt-registry:5000/bolt-ci:20251217
+        image: localhost:5000/bolt-ci:20251217
         volumes:
           - /data/ccache-data:/data/ccache-data
         options: --user root
       services:
         conanserver:
-          image: bolt-registry:5000/conan-server:latest
+          image: localhost:5000/conan-server:latest
           volumes:
             - /data/conan-server-data:/var/conan/data
       steps:

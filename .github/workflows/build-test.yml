@@ -54,7 +54,6 @@ jobs:
             scripts/**
   build-test:
     needs: changes
-    if: ${{ needs.changes.outputs.source_changed == 'true' }}
     runs-on: [ self-hosted, medium ]
     container: 
       image: bolt-registry:5000/bolt-ci:20251217

@@ -20,9 +20,9 @@
 name: Build and Test
 on:
   push:
-    branches: [ main ]
+    branches: [ Arm-CI ]
   pull_request:
-    branches: [ main ]
+    branches: [ Arm-CI ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -84,7 +84,7 @@ jobs:
       run: |
         make unittest_${{ matrix.build_type }}
 
-  benchmarks-build2:
+  benchmarks-build:
       needs: changes
       if: ${{ needs.changes.outputs.source_changed == 'true' }}
       runs-on: [ self-hosted, medium ]

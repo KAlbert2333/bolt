@@ -39,7 +39,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: [ self-hosted, small ]
+    runs-on: [ self-hosted, physical ]
     outputs:
       source_changed: ${{ steps.filter.outputs.source_changed }}
     steps:
@@ -54,7 +54,7 @@ jobs:
             !bolt/**/*.md
 
   format-check:
-    runs-on: [ self-hosted, small ]
+    runs-on: [ self-hosted, physical ]
     steps:
       - name: Checkout code
         uses: actions/checkout@v6

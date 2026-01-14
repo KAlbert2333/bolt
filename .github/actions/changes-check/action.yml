@@ -38,7 +38,6 @@ runs:
       shell: bash
       run: |
         echo "Analyzing path filters..."
-        git config --global url."https://gh-proxy.test.osinfra.cn/https://github.com/".insteadOf = https://github.com/
         if [ "${{ github.event_name }}" == "pull_request" ]; then
           BASE_REF="origin/${{ github.base_ref }}"
           HEAD_REF="HEAD"

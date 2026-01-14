@@ -67,8 +67,6 @@ jobs:
     services:
       conanserver:
         image: localhost:5000/conan-server:latest
-        options: 
-          --network host
         volumes:
           - /data/conan-server-data:/var/conan/data
           - /root/.gitconfig:/root/.gitconfig

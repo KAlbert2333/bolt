@@ -154,9 +154,9 @@ struct Batch128 {
   T data[size];
 
   static Batch128 from(std::initializer_list<T> values) {
-    VELOX_DCHECK_EQ(values.size(), size);
+    BOLT_DCHECK_EQ(values.size(), size);
     Batch128 ans;
-    for (int i = 0; i < size; ++i) {
+    for (int i = 0; i < size_t; ++i) {
       ans.data[i] = *(values.begin() + i);
     }
     return ans;
@@ -177,7 +177,7 @@ struct Batch128 {
   }
 
   friend Batch128 operator+(Batch128 x, T y) {
-    for (int i = 0; i < size; ++i) {
+    for (int i = 0; i < size_t; ++i) {
       x.data[i] += y;
     }
     return x;

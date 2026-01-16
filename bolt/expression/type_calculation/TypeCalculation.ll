@@ -27,7 +27,7 @@
  * This modified file is released under the same license.
  * --------------------------------------------------------------------------
  */
- 
+
 %{
 #include "bolt/expression/type_calculation/TypeCalculation.yy.h"  // @manual
 #include "bolt/expression/type_calculation/Scanner.h"
@@ -63,7 +63,7 @@ var             ([[:alpha:]][[:alnum:]_]*)
 {integer}       yylval->build<long long>(strtoll(YYText(), nullptr, 10)); return Parser::token::INT;
 {var}           yylval->build<std::string>(YYText()); return Parser::token::VAR;
 <<EOF>>         return Parser::token::YYEOF;
-.               /* no action on unmatched input */
+(.|\n)          /* no action on unmatched input */
 
 %%
 

@@ -13,7 +13,60 @@
 # limitations under the License.
 
 repos:
-  -   repo: https://github.com/pre-commit/mirrors-clang-format
-      rev: 'v14.0.6'
-      hooks:
-      -   id: clang-format
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: 'v14.0.6'
+    hooks:
+      - id: clang-format
+        name: clang-format C++ files
+        types_or: [c++, c]
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/BlankSpruce/gersemi
+    rev: 0.25.1
+    hooks:
+    - id: gersemi
+      name: Check CMake files
+      args: ["--no-warn-about-unknown-commands"]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: \.(patch|diff)$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-toml
+      - id: check-yaml
+      - id: check-xml
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.11
+    hooks:
+      - id: ruff-check
+        types_or: [ python, pyi ]
+        args: [ --fix ]
+      - id: ruff-format
+        types_or: [ python, pyi ]
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.12.0-2
+    hooks:
+      - id: shfmt
+        args: ["-w", "-i", "2", "-bn", "-ci", "-sr"]
+
+  - repo: local
+    hooks:
+      -   id: license-header-check
+          name: Check for license headers
+          entry: license-eye header check
+          language: golang
+          pass_filenames: false
+          additional_dependencies: ['github.com/apache/skywalking-eyes/cmd/license-eye@v0.8.0']
+          args: ["-c", ".licenserc.yaml"]

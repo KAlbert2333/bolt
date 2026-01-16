@@ -15,9 +15,11 @@
  */
 
 #include "bolt/shuffle/sparksql/partition_writer/PartitionWriter.h"
-#include <bolt/common/base/Exceptions.h>
+
+#include "bolt/common/base/Exceptions.h"
 #include "bolt/shuffle/sparksql/partition_writer/LocalPartitionWriter.h"
 #include "bolt/shuffle/sparksql/partition_writer/rss/CelebornPartitionWriter.h"
+
 using namespace bytedance::bolt::shuffle::sparksql;
 
 std::unique_ptr<PartitionWriter> PartitionWriter::create(
@@ -35,7 +37,7 @@ std::unique_ptr<PartitionWriter> PartitionWriter::create(
         options.numPartitions, options, pool, options.rssClient);
   } else {
     BOLT_FAIL(
-        "Unsupported partition writer type: " + options.partitionWriterType);
+        "Unsupported partition writer type: {}", options.partitionWriterType);
   }
   return nullptr;
 }

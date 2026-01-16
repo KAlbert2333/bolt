@@ -31,10 +31,12 @@
 # If built on SCM use date as version
 # $(shell date '+%Y.%m.%d.00')
 BUILD_VERSION ?= main
-BUILD_USER ?= 
+BUILD_USER ?=
 BUILD_CHANNEL ?=
 # Use commas to separate multiple file systems, such as `hdfs,tos`
-FILE_SYSTEM ?= hdfs
+ENABLE_HDFS ?= True
+ENABLE_S3 ?= False
+USE_ARROW_HDFS ?= True
 ENABLE_ASAN ?= False
 LDB_BUILD ?= False
 ENABLE_COLOR ?= True
@@ -42,9 +44,10 @@ ENABLE_CRC ?= False
 ENABLE_EXCEPTION_TRACE ?= True
 ENABLE_PERF ?= False
 
-ifeq ($(shell arch), aarch64)
-ENABLE_EXCEPTION_TRACE = False
-$(info ENABLE_EXCEPTION_TRACE is disabled on ARM platform)
+ARCH := $(shell uname -m)
+ifneq (,$(filter $(ARCH), aarch64 arm64))
+    ENABLE_EXCEPTION_TRACE = False
+    $(info ENABLE_EXCEPTION_TRACE is disabled on ARM platform)
 endif
 
 ifeq ($(LDB_BUILD), True)
@@ -69,12 +72,24 @@ GLUTEN_CONAN_OPTIONS:=$(GLUTEN_BOLT_OPTIONS)
 
 # ---------- Conan variables defination ends ----------
 
-MEMORY ?=$(shell free -g | grep 'Mem:' | awk '{print $$2}')
-FREE_MEMORY ?=$(shell free -g | grep 'Mem:' | awk '{print $$4}')
-CPU_CORES ?=$(shell grep -c 'processor' /proc/cpuinfo)
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+    # Linux
+    MEMORY ?= $(shell free -g | grep 'Mem:' | awk '{print $$2}')
+    FREE_MEMORY ?= $(shell free -g | grep 'Mem:' | awk '{print $$4}')
+    CPU_CORES ?= $(shell grep -c 'processor' /proc/cpuinfo)
+else ifeq ($(UNAME_S),Darwin)
+    # macOS
+    MEMORY ?= $(shell sysctl -n hw.memsize | awk '{print int($$1/1024/1024/1024)}')
+    FREE_MEMORY ?= $(shell vm_stat | grep "Pages free" | awk '{print int($$3*4096/1024/1024/1024)}')
+    CPU_CORES ?= $(shell sysctl -n hw.ncpu)
+else
+    MEMORY ?= 8
+    FREE_MEMORY ?= 4
+    CPU_CORES ?= 4
+endif
 
 # collect system info
-UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
     OS_DETAILED   := $(shell sw_vers -productName) $(shell sw_vers -productVersion) ($(shell sw_vers -buildVersion))
     CPU_MODEL     := $(shell sysctl -n machdep.cpu.brand_string)
@@ -158,7 +173,12 @@ endif
 
 CPU_TARGET ?= "avx"
 
-FUZZER_SEED ?= $(shell shuf -i 1000000000-5000000000 -n 1)
+ifeq ($(UNAME_S),Darwin)
+    FUZZER_SEED ?= $(shell python3 -c 'import random; print(random.randint(1000000000, 5000000000))')
+else
+    FUZZER_SEED ?= $(shell shuf -i 1000000000-5000000000 -n 1)
+endif
+
 FUZZER_MAX_LEVEL_NEST ?= 5
 FUZZER_DURATION_SEC ?= 600
 FUZZER_EXPRESSION_REPRO_PERSIST_PATH ?= expression_fuzzer
@@ -190,40 +210,13 @@ all: 			#: Build the release version
 clean:					#: Delete all build artifacts
 	rm -rf $(BUILD_BASE_DIR) && rm -rf CMakeUserPresets.json && rm -rf $(BENCHMARKS_BASIC_DIR)
 
+# only used in CI
 clang-format-check:
 	find bolt \( -name "*.cpp" -o -name "*.h" \) -type f > files.txt
 	cat files.txt | xargs -I{} -P $(CPU_CORES) clang-format -style=file --dry-run {} > log.txt 2>&1
 	cat log.txt && echo -e "You can use clang-format -i -style=file path_to_file command to format file"
 	if grep -q 'warning' log.txt; then false; fi
 	@rm -f files.txt log.txt
-
-clang-format:
-	find bolt \( -name "*.cpp" -o -name "*.h" \) -type f | xargs -P $(CPU_CORES) -n 10 clang-format -i -style=file
-
-clang-format-modified:
-	@ (git diff --name-only --diff-filter=ACMR HEAD bolt; \
-	   git ls-files --others --exclude-standard bolt) \
-	| grep -E "\.(cpp|h)$$" | sort | uniq > modified_files.txt || true
-	@if [ -s modified_files.txt ]; then \
-		cat modified_files.txt | xargs -P $(CPU_CORES) clang-format -i -style=file; \
-		echo "✅ Formatted the following modified files:"; \
-		cat modified_files.txt; \
-	else \
-		echo "💤 No modified .cpp/.h files found."; \
-	fi
-	@rm -f modified_files.txt
-
-clang-format-branch:
-	@echo "Formatting changes against main..."
-	@git diff --name-only --diff-filter=ACMR origin/main...HEAD bolt \
-	| grep -E "\.(cpp|h)$$" > branch_files.txt || true
-	@if [ -s branch_files.txt ]; then \
-		cat branch_files.txt | xargs -P $(CPU_CORES) clang-format -i -style=file; \
-		echo "✅ Formatted files changed in this branch."; \
-	else \
-		echo "💤 No changed .cpp/.h files found against main."; \
-	fi
-	@rm -f branch_files.txt
 
 conan_build:
 	if [ ! -d "_build" ]; then \
@@ -234,7 +227,9 @@ conan_build:
 	rm -f _build/${BUILD_TYPE}/CMakeCache.txt && \
 	echo ${BUILD_TYPE} > _build/.build_type && \
 	cd _build/${BUILD_TYPE} && \
-	echo "-o bolt/*:file_system=${FILE_SYSTEM} \
+	echo " -o bolt/*:enable_hdfs=${ENABLE_HDFS} \
+	-o bolt/*:use_arrow_hdfs=${USE_ARROW_HDFS} \
+	-o bolt/*:enable_s3=${ENABLE_S3} \
 	-o bolt/*:enable_asan=${ENABLE_ASAN} \
 	-o bolt/*:enable_perf=${ENABLE_PERF} \
 	-o bolt/*:enable_color=${ENABLE_COLOR} \
@@ -243,7 +238,7 @@ conan_build:
 	-o bolt/*:enable_exception_trace=${ENABLE_EXCEPTION_TRACE} \
 	-o bolt/*:ldb_build=${LDB_BUILD} \
 	-o bolt/*:enable_crc=${ENABLE_CRC} \
-	-pr ${PROFILE} \
+	-pr ${PROFILE} -pr ../../scripts/conan/bolt.profile \
 	${CONAN_OPTIONS}" > conan.options && \
 	read ALL_CONAN_OPTIONS < conan.options && \
 	conan graph info ../.. $${ALL_CONAN_OPTIONS} --format=html > bolt.conan.graph.html  && \

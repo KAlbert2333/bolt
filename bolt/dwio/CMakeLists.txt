@@ -35,13 +35,14 @@ target_link_libraries(
             bolt_encode
             bolt_exception
             bolt_memory
-            bolt_process
+            $<LINK_LIBRARY:WHOLE_ARCHIVE,bolt_process>
             bolt_serialization
             bolt_type
             bolt_type_fbhive
             bolt_vector
             Folly::folly
-            fmt::fmt)
+            fmt::fmt
+)
 
 add_subdirectory(common)
 add_subdirectory(catalog)

@@ -83,8 +83,19 @@ void SelectiveStructColumnReaderBase::next(
     auto resultRowVector = std::dynamic_pointer_cast<RowVector>(result);
     resultRowVector->unsafeResize(numValues);
 
-    auto& childSpecs = scanSpec_->children();
-    for (auto& childSpec : childSpecs) {
+    const auto& childSpecs = scanSpec_->children();
+    for (const auto& childSpec : childSpecs) {
+      if (childSpec->isRowIndex()) {
+        auto channel = childSpec->channel();
+        auto& childResult = resultRowVector->childAt(channel);
+        BaseVector::prepareForReuse(childResult, numValues);
+        auto* rowIdxs =
+            childResult->as<FlatVector<int64_t>>()->mutableRawValues();
+        int64_t startIdx =
+            childSpec->getRowIndexBase() + rowGroupOffset_ + readOffset_;
+        std::iota(rowIdxs, rowIdxs + numValues, startIdx);
+        continue;
+      }
       BOLT_CHECK(childSpec->isConstant());
       if (childSpec->projectOut()) {
         auto channel = childSpec->channel();
@@ -258,7 +269,7 @@ void fillRowVectorChildren(
 }
 
 VectorPtr tryReuseResult(const VectorPtr& result) {
-  if (!result.unique()) {
+  if (result.use_count() != 1) {
     return nullptr;
   }
   switch (result->encoding()) {
@@ -289,7 +300,7 @@ void setConstantField(
     const VectorPtr& constant,
     vector_size_t size,
     VectorPtr& field) {
-  if (field && field->isConstantEncoding() && field.unique() &&
+  if (field && field->isConstantEncoding() && field.use_count() == 1 &&
       field->size() > 0 && field->equalValueAt(constant.get(), 0, 0)) {
     field->resize(size);
   } else {
@@ -302,7 +313,7 @@ void setNullField(
     VectorPtr& field,
     const TypePtr& type,
     memory::MemoryPool* pool) {
-  if (field && field->isConstantEncoding() && field.unique() &&
+  if (field && field->isConstantEncoding() && field.use_count() == 1 &&
       field->size() > 0 && field->isNullAt(0)) {
     field->resize(size);
   } else {
@@ -374,6 +385,20 @@ void SelectiveStructColumnReaderBase::getValues(
     }
     auto channel = childSpec->channel();
     auto& childResult = resultRow->childAt(channel);
+    // check if the row index column name is in the file. If so, skip generating
+    // it
+    if (childSpec->isRowIndex() &&
+        !fileType_->containsChild(childSpec->fieldName())) {
+      BaseVector::prepareForReuse(childResult, rows.size());
+      auto* flatVector =
+          childResult->as<FlatVector<int64_t>>()->mutableRawValues();
+      int64_t rowIndexBase = childSpec->getRowIndexBase() + rowGroupOffset_ +
+          lazyVectorReadOffset_;
+      for (size_t i = 0; i < rows.size(); ++i) {
+        flatVector[i] = rowIndexBase + rows[i];
+      }
+      continue;
+    }
     if (childSpec->isConstant()) {
       setConstantField(childSpec->constantValue(), rows.size(), childResult);
       continue;
@@ -400,7 +425,7 @@ void SelectiveStructColumnReaderBase::getValues(
     }
     auto loader =
         std::make_unique<ColumnLoader>(this, children_[index], numReads_);
-    if (childResult && childResult->isLazy() && childResult.unique()) {
+    if (childResult && childResult->isLazy() && childResult.use_count() == 1) {
       static_cast<LazyVector&>(*childResult)
           .reset(std::move(loader), rows.size());
     } else {

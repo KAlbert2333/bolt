@@ -14,7 +14,7 @@
 
 from conan import ConanFile
 from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
-from conan.tools.files import get, replace_in_file
+from conan.tools.files import get
 from conan.tools.env import VirtualBuildEnv
 import os
 
@@ -53,19 +53,23 @@ class FizzConan(ConanFile):
         cmake_layout(self, src_folder="src")
 
     def requirements(self):
-        self.requires("folly/2022.10.31.00", transitive_headers=True, transitive_libs=True)
+        self.requires(
+            "folly/2022.10.31.00", transitive_headers=True, transitive_libs=True
+        )
         self.requires("fmt/8.0.1", transitive_headers=True, transitive_libs=True)
         self.requires("openssl/1.1.1w")
         self.requires("glog/0.7.1", transitive_headers=True, transitive_libs=True)
         self.requires("gflags/2.2.2")
-        self.requires("double-conversion/3.3.0", transitive_headers=True, transitive_libs=True)
+        self.requires(
+            "double-conversion/3.3.0", transitive_headers=True, transitive_libs=True
+        )
         self.requires("zstd/1.5.7", transitive_headers=True, transitive_libs=True)
         self.requires("libsodium/1.0.19", transitive_headers=True, transitive_libs=True)
         self.requires("zlib/1.2.13")
         self.requires("libevent/2.1.12", transitive_headers=True, transitive_libs=True)
 
     def build_requirements(self):
-        self.tool_requires("cmake/3.31.3")
+        self.tool_requires("cmake/3.31.10")
 
     def source(self):
         get(self, **self.conan_data["sources"][self.version], strip_root=True)
@@ -86,7 +90,6 @@ class FizzConan(ConanFile):
         deps.generate()
 
     def build(self):
-        cmakelists = os.path.join(self.source_folder, "fizz", "CMakeLists.txt")
         cmake = CMake(self)
         cmake.configure(build_script_folder=os.path.join(self.source_folder, "fizz"))
         cmake.build()

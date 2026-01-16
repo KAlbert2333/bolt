@@ -38,7 +38,7 @@
 #include "bolt/connectors/hive/PaimonConnectorSplit.h"
 #include "bolt/connectors/hive/SplitReader.h"
 #include "bolt/connectors/hive/TableHandle.h"
-#ifdef BOLT_ENABLE_HDFS3
+#ifdef BOLT_ENABLE_HDFS
 #include "bolt/connectors/hive/storage_adapters/hdfs/StorageException.h"
 #endif
 #include "bolt/core/QueryConfig.h"
@@ -82,15 +82,15 @@ class HiveDataSource : public DataSource {
     return ioStats_->rawBytesRead();
   }
 
-  std::vector<uint64_t> getCompletedBytesReads() {
+  std::vector<uint64_t> getCompletedBytesReads() override {
     return ioStats_->rawBytesReads();
   }
 
-  std::vector<uint64_t> getCompletedCntReads() {
+  std::vector<uint64_t> getCompletedCntReads() override {
     return ioStats_->cntReads();
   }
 
-  std::vector<uint64_t> getCompletedScanTimeReads() {
+  std::vector<uint64_t> getCompletedScanTimeReads() override {
     return ioStats_->scanTimeReads();
   }
 
@@ -189,7 +189,7 @@ class HiveDataSource : public DataSource {
   void recalculateRepDefConf(
       const RowTypePtr& rowType,
       const core::QueryConfig& queryConfig);
-#ifdef BOLT_ENABLE_HDFS3
+#ifdef BOLT_ENABLE_HDFS
   bool isLastRetry();
 #endif
 
@@ -229,7 +229,7 @@ class HiveDataSource : public DataSource {
   // ignore corrupt file
   int64_t ignoredFileSizes_{0};
   bool ignoreCorruptFiles_{false};
-#ifdef BOLT_ENABLE_HDFS3
+#ifdef BOLT_ENABLE_HDFS
   int64_t taskMaxFailures_{0};
   inline static std::mutex canIgnoredExceptionsMutex_;
   inline static std::vector<std::string> canIgnoredExceptions_{};

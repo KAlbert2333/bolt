@@ -124,7 +124,7 @@ int64_t ExecutionMemoryPool::acquireMemory(
     int64_t minMemoryPerTask = internalPoolSize() / (2 * numActiveTasks);
 
     int64_t maxToGrant =
-        std::min(numBytes, std::max(0L, maxMemoryPerTask - curMem));
+        std::min(numBytes, std::max<int64_t>(0L, maxMemoryPerTask - curMem));
     int64_t toGrant = std::min(maxToGrant, internalMemoryFree());
 
     if (toGrant < numBytes && curMem + toGrant < minMemoryPerTask) {
@@ -234,7 +234,7 @@ int64_t ExecutionMemoryPool::getOveragedMemoryForTask(int64_t taskAttemptId) {
   int64_t maxPoolSize = internalPoolSize();
   int64_t maxMemoryPerTask = maxPoolSize / numActiveTasks;
 
-  return std::max(0L, curMem - maxMemoryPerTask);
+  return std::max<int64_t>(0L, curMem - maxMemoryPerTask);
 }
 
 std::optional<int64_t> ExecutionMemoryPool::getAvailableMemoryPerTask() {
@@ -285,7 +285,7 @@ std::optional<int64_t> ExecutionMemoryPool::getMinimumFreeMemoryForTask(
     available = instance()->poolSize_.value_or(0) / instance()->maxTaskNumber();
   }
   auto usage = instance()->getMemoryUsageForTask(taskAttemptId);
-  return std::max((int64_t)0, available - usage);
+  return std::max<int64_t>(0L, available - usage);
 }
 
 std::ostream& operator<<(std::ostream& os, const ExecutionMemoryPool& pool) {
@@ -296,7 +296,10 @@ std::ostream& operator<<(std::ostream& os, const ExecutionMemoryPool& pool) {
     os << "[taskAttemptId=" << pair.first << ", memoryUsed=" << pair.second
        << "]";
   }
-  os << ", DynamicMemoryQuotaManagerStatistics=" << pool.statistics_.toString();
+  if (pool.statistics_.extendCount > 0) {
+    os << ", DynamicMemoryQuotaManagerStatistics="
+       << pool.statistics_.toString();
+  }
   os << ", DynamicMemoryQuotaManagerOption=" << pool.option_.toString();
   return os << "}";
 }
@@ -329,7 +332,7 @@ int64_t ExecutionMemoryPool::internalPoolSize() const {
 }
 
 int64_t ExecutionMemoryPool::internalMemoryFree() const {
-  return std::max(0L, internalPoolSize() - internalMemoryUsed());
+  return std::max<int64_t>(0L, internalPoolSize() - internalMemoryUsed());
 }
 
 bool ExecutionMemoryPool::triggerDynamicMemoryQuotaManager(
@@ -404,6 +407,11 @@ bool ExecutionMemoryPool::triggerDynamicMemoryQuotaManager(
   }
 
   return false;
+}
+
+void ExecutionMemoryPool::testingResetPoolSize(int64_t newSize) {
+  MemoryMutexGuard guard(instance()->lock_);
+  instance()->poolSize_ = newSize;
 }
 
 } // namespace bytedance::bolt::memory::sparksql

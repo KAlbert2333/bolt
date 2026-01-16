@@ -86,9 +86,9 @@ TEST_F(JitEngineTest, basic) {
   auto tsm = jit->CreateTSModule(fn);
 
   const char* ir = R"IR(
-       ;declare i32 @llvm.bswap.i32(i32) 
+       ;declare i32 @llvm.bswap.i32(i32)
 
-        ;eclare i64 @llvm.bswap.i64(i64) 
+        ;eclare i64 @llvm.bswap.i64(i64)
 
         declare i64 @extern_test_sum(i64 noundef, i64 noundef) local_unnamed_addr
 
@@ -180,6 +180,7 @@ TEST_F(JitEngineTest, cacheLimit) {
     )IR";
 
   constexpr size_t LIMIT = 1024;
+  jit->GetCache().clear();
   jit->SetMemoryLimit(LIMIT);
 
   for (auto i = 0; i < 16; ++i) {
@@ -193,6 +194,7 @@ TEST_F(JitEngineTest, cacheLimit) {
       ASSERT_TRUE(!err);
     });
 
+    // 768 bytes
     CompiledModuleSP mod = jit->CompileModule(std::move(tsm));
 
     typedef int64_t (*FuncProto)(int64_t, int64_t);

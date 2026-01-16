@@ -27,7 +27,7 @@
  * This modified file is released under the same license.
  * --------------------------------------------------------------------------
  */
- 
+
 %{
 #include <FlexLexer.h>
 #include <bolt/common/base/Exceptions.h>
@@ -62,7 +62,7 @@
 %nterm <long long>  iexp
 
 %nonassoc           ASSIGN
-%right              TERNARY
+%right              TERNARY COLON
 %left               EQ NEQ
 %left               LT LTE GT GTE
 %left               PLUS MINUS

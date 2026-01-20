@@ -20,9 +20,9 @@
 name: Build and Test
 on:
   push:
-    branches: [ main ]
+    branches: [ NewArmCI ]
   pull_request:
-    branches: [ main ]
+    branches: [ NewArmCI ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -35,7 +35,7 @@ env:
 
 jobs:
   changes:
-    runs-on:  [ self-hosted, small ]
+    runs-on:  [ self-hosted, physical ]
     outputs:
       source_code: ${{ steps.filter.outputs.source_code }}
     steps:
@@ -53,18 +53,24 @@ jobs:
               - 'scripts/**'
   build-test:
     needs: changes
-    if: ${{ needs.changes.outputs.source_code == 'true' }}
-    runs-on: [ self-hosted, medium ]
-    container:
-      image: bolt-registry:5000/bolt-ci:20251217
-      options: --user root
+    runs-on: [ self-hosted, physical ]
+    container: 
+      image: localhost:5000/bolt-ci:20251217
+      options: 
+        --user root
+        --network host
+        -e http_proxy=http://127.0.0.1:7890
+        -e https_proxy=http://127.0.0.1:7890
+        -e no_proxy=conanserver,localhost,127.0.0.1
       volumes:
         - /data/ccache-data:/data/ccache-data
+        - /root/.gitconfig:/github/home/.gitconfig
     services:
       conanserver:
-        image: bolt-registry:5000/conan-server:latest
+        image: localhost:5000/conan-server:latest
         volumes:
           - /data/conan-server-data:/var/conan/data
+          - /root/.gitconfig:/root/.gitconfig
     strategy:
       matrix:
         build_type: [ release, release_spark ]
@@ -86,7 +92,7 @@ jobs:
   benchmarks-build:
       needs: changes
       if: ${{ needs.changes.outputs.source_code == 'true' }}
-      runs-on: [ self-hosted, medium ]
+      runs-on: [ self-hosted, physical ]
       container:
         image: bolt-registry:5000/bolt-ci:20251217
         volumes:

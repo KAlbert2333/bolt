@@ -64,13 +64,11 @@ jobs:
         -e no_proxy=conanserver,localhost,127.0.0.1
       volumes:
         - /data/ccache-data:/data/ccache-data
-        - /root/.gitconfig:/github/home/.gitconfig
     services:
       conanserver:
         image: localhost:5000/conan-server:latest
         volumes:
           - /data/conan-server-data:/var/conan/data
-          - /root/.gitconfig:/root/.gitconfig
     strategy:
       matrix:
         build_type: [ release, release_spark ]
@@ -91,16 +89,20 @@ jobs:
 
   benchmarks-build:
       needs: changes
-      if: ${{ needs.changes.outputs.source_code == 'true' }}
       runs-on: [ self-hosted, physical ]
-      container:
-        image: bolt-registry:5000/bolt-ci:20251217
+      container: 
+        image: localhost:5000/bolt-ci:20251217
+        options: 
+          --user root
+          --network host
+          -e http_proxy=http://127.0.0.1:7890
+          -e https_proxy=http://127.0.0.1:7890
+          -e no_proxy=conanserver,localhost,127.0.0.1
         volumes:
           - /data/ccache-data:/data/ccache-data
-        options: --user root
       services:
         conanserver:
-          image: bolt-registry:5000/conan-server:latest
+          image: localhost:5000/conan-server:latest
           volumes:
             - /data/conan-server-data:/var/conan/data
       steps:

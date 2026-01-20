@@ -61,6 +61,9 @@ jobs:
       options: 
         --user root
         --network host
+        --e http_proxy=http://127.0.0.1:7890
+        --e https_proxy=http://127.0.0.1:7890
+        --e no_proxy=localhost,127.0.0.1
       volumes:
         - /data/ccache-data:/data/ccache-data
         - /root/.gitconfig:/github/home/.gitconfig

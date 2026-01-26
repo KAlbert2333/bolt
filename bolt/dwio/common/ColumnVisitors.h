@@ -891,8 +891,8 @@ class DictionaryColumnVisitor
           simd::reinterpretBatch<uint32_t>((cache & (kUnknown << 24)) << 1) !=
           xsimd::batch<uint32_t>(0));
       auto passed = simd::toBitMask(
-          (cache & xsimd::batch<int32_t>(kSuccess << 24)) != 
-              xsimd::batch<int32_t>(0));
+          (cache & xsimd::batch<int32_t>(kSuccess << 24)) !=
+          xsimd::batch<int32_t>(0));
 #else
       auto unknowns = simd::toBitMask(xsimd::batch_bool<int32_t>(
           simd::reinterpretBatch<uint32_t>((cache & (kUnknown << 24)) << 1)));
@@ -1263,8 +1263,8 @@ class StringDictionaryColumnVisitor
           simd::reinterpretBatch<uint32_t>((cache & (kUnknown << 24)) << 1) !=
           xsimd::batch<uint32_t>(0));
       auto passed = simd::toBitMask(
-          (cache & xsimd::batch<int32_t>(kSuccess << 24)) != 
-              xsimd::batch<int32_t>(0));
+          (cache & xsimd::batch<int32_t>(kSuccess << 24)) !=
+          xsimd::batch<int32_t>(0));
 #else
       auto unknowns = simd::toBitMask(xsimd::batch_bool<int32_t>(
           simd::reinterpretBatch<uint32_t>((cache & (kUnknown << 24)) << 1)));

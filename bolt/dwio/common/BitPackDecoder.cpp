@@ -198,12 +198,13 @@ int32_t decode1To24(
 
 namespace {
 
-template <typename T> inline T *addBytes(T *pointer, int32_t offset) {
-  return reinterpret_cast<T *>(reinterpret_cast<uint64_t>(pointer) + offset);
+template <typename T>
+inline T* addBytes(T* pointer, int32_t offset) {
+  return reinterpret_cast<T*>(reinterpret_cast<uint64_t>(pointer) + offset);
 }
 
 template <typename T>
-void store8Ints_sve(svint32_t eightInts_sve, int32_t i, T *result) {
+void store8Ints_sve(svint32_t eightInts_sve, int32_t i, T* result) {
   if constexpr (sizeof(T) == 2) {
     svint16_t eightInts_s16 = svqxtnb_s32(eightInts_sve);
     svst1_s16(svwhilelt_b16(0, 8), &result[i], eightInts_s16);
@@ -218,24 +219,30 @@ void store8Ints_sve(svint32_t eightInts_sve, int32_t i, T *result) {
 }
 
 template <uint8_t width>
-void gather8Sparse_sve(const uint64_t *bits, int32_t bitOffset,
-                       const int32_t *rows, int32_t i, uint32_t eightInts[8]) {
+void gather8Sparse_sve(
+    const uint64_t* bits,
+    int32_t bitOffset,
+    const int32_t* rows,
+    int32_t i,
+    uint32_t eightInts[8]) {
   svbool_t pg = svwhilelt_b32(i, i + 8);
   svbool_t pg8 = svwhilelt_b32(0, 8);
 
   svuint32_t row_vec = svreinterpret_u32_s32(svld1_s32(pg, rows + i));
-  svuint32_t indices =
-      svmla_u32_z(pg8, svdup_u32(static_cast<uint32_t>(bitOffset)), row_vec,
-                  svdup_n_u32(width));
+  svuint32_t indices = svmla_u32_z(
+      pg8,
+      svdup_u32(static_cast<uint32_t>(bitOffset)),
+      row_vec,
+      svdup_n_u32(width));
   svuint32_t byte_indices =
       svlsr_u32_z(pg8, indices, svdup_n_u32(static_cast<uint32_t>(3)));
 
   svuint32_t data = svld1_gather_u32offset_u32(
-      pg8, reinterpret_cast<const uint32_t *>(bits), byte_indices);
+      pg8, reinterpret_cast<const uint32_t*>(bits), byte_indices);
 
   if constexpr (width % 8 != 0) {
-    constexpr static uint32_t kMultipliers_arr[8] = {256, 128, 64, 32,
-                                                     16,  8,   4,  2};
+    constexpr static uint32_t kMultipliers_arr[8] = {
+        256, 128, 64, 32, 16, 8, 4, 2};
     svuint32_t kMultipliers_vec = svld1_u32(pg8, kMultipliers_arr);
     svuint32_t bit_in_byte =
         svand_u32_z(pg8, indices, svdup_n_u32(static_cast<uint32_t>(7)));
@@ -249,8 +256,12 @@ void gather8Sparse_sve(const uint64_t *bits, int32_t bitOffset,
 }
 
 template <uint8_t width, typename T>
-int32_t decode1To24_sve(const uint64_t *bits, int32_t bitOffset,
-                        const int *rows, int32_t numRows, T *result) {
+int32_t decode1To24_sve(
+    const uint64_t* bits,
+    int32_t bitOffset,
+    const int* rows,
+    int32_t numRows,
+    T* result) {
   constexpr uint64_t kMask = bits::lowMask(width);
   constexpr uint64_t kMask2 = kMask | (kMask << 8);
   constexpr uint64_t kMask4 = kMask2 | (kMask2 << 16);
@@ -288,8 +299,10 @@ int32_t decode1To24_sve(const uint64_t *bits, int32_t bitOffset,
           svuint64_t result_vec = svbdep_u64(word_vec, kBdepMask8);
           eightBytes = svlastb_u64(pg1, result_vec);
         }
-        svst1_u32(pg8, eightInts,
-                  svld1ub_u32(svwhilelt_b32(0, 8), (uint8_t *)&eightBytes));
+        svst1_u32(
+            pg8,
+            eightInts,
+            svld1ub_u32(svwhilelt_b32(0, 8), (uint8_t*)&eightBytes));
       } else {
         // Use pdep to shift 2 words of bit packed data with width
         // 9-16. For widts <= 14 four bit packed fields can always be
@@ -350,10 +363,10 @@ int32_t decode1To24_sve(const uint64_t *bits, int32_t bitOffset,
   return i;
 }
 
-#define WIDTH_CASE_SVE(width)                                                  \
-  case width:                                                                  \
-    i = decode1To24_sve<width>(bits, bitOffset, rows.data(), numSafeRows,      \
-                               result);                                        \
+#define WIDTH_CASE_SVE(width)                               \
+  case width:                                               \
+    i = decode1To24_sve<width>(                             \
+        bits, bitOffset, rows.data(), numSafeRows, result); \
     break;
 
 } // namespace

@@ -159,12 +159,12 @@ struct BitMask<T, A, 2> {
   }
 #endif
 
-#if XSIMD_WITH_SVE 
+#if XSIMD_WITH_SVE
   static int toBitMask(xsimd::batch_bool<T, A> mask, const xsimd::sve&) {
-    svuint16_t onc = svdup_u16(1);  
-    svuint16_t inv = svindex_u16(0, 1); 
+    svuint16_t onc = svdup_u16(1);
+    svuint16_t inv = svindex_u16(0, 1);
     svuint16_t pow = svlsl_m(svptrue_b16(), onc, inv);
-    uint32_t nullsres = svaddv(mask, pow);  
+    uint32_t nullsres = svaddv(mask, pow);
     return nullsres;
   }
 #endif
@@ -624,12 +624,10 @@ struct Gather<T, int32_t, A, 4> {
   template <int kScale>
   static xsimd::batch<T, A>
   apply(const T* base, const int32_t* indices, const xsimd::sve& arch) {
-    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices); 
+    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices);
     return reinterpret_cast<typename xsimd::batch<T, A>::register_type>(
-          svld1_gather_s32index_s32(
-                svptrue_b32(), 
-                reinterpret_cast<const int32_t*>(base), 
-                hashes_vec));
+        svld1_gather_s32index_s32(
+            svptrue_b32(), reinterpret_cast<const int32_t*>(base), hashes_vec));
   }
 #endif
 
@@ -655,7 +653,7 @@ struct Gather<T, int32_t, A, 4> {
   apply(const T* base, VIndexType vindex, const xsimd::sve&) {
     alignas(A::alignment()) int32_t indices[vindex.size];
     vindex.store_aligned(indices);
-    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices); 
+    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices);
     return genericGather<T, A, kScale>(base, indices);
   }
 #endif
@@ -687,11 +685,9 @@ struct Gather<T, int32_t, A, 4> {
       const int32_t* indices,
       const xsimd::sve& arch) {
     svint32_t result = svld1_gather_s32index_s32(
-                mask,
-                reinterpret_cast<const int32_t*>(base), 
-                svld1_s32(mask, indices));
+        mask, reinterpret_cast<const int32_t*>(base), svld1_s32(mask, indices));
     return reinterpret_cast<typename xsimd::batch<T, A>::register_type>(
-          svsel_s32(mask, result, src));
+        svsel_s32(mask, result, src));
   }
 #endif
 
@@ -789,33 +785,29 @@ struct Gather<T, int32_t, A, 8> {
     return genericGather<T, A, kScale>(base, indices);
   }
 
-#if XSIMD_WITH_SVE  
+#if XSIMD_WITH_SVE
   template <int kScale>
   static xsimd::batch<T, A>
   apply(const T* base, const int32_t* indices, const xsimd::sve& arch) {
-    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices); 
+    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices);
     svint64_t idx64_lo = svunpklo_s64(hashes_vec);
     return reinterpret_cast<typename xsimd::batch<T, A>::register_type>(
-          svld1_gather_s64index_s64(
-                svptrue_b64(), 
-                reinterpret_cast<const int64_t*>(base), 
-                idx64_lo));
+        svld1_gather_s64index_s64(
+            svptrue_b64(), reinterpret_cast<const int64_t*>(base), idx64_lo));
   }
 #endif
 
-#if (XSIMD_WITH_SVE && SVE_BITS == 256) 
+#if (XSIMD_WITH_SVE && SVE_BITS == 256)
   template <int kScale>
   static xsimd::batch<T, A>
   apply(const T* base, Batch128<int32_t> vindex, const xsimd::sve&) {
     alignas(A::alignment()) int32_t indices[vindex.size];
     vindex.store_unaligned(indices);
-    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices); 
+    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices);
     svint64_t idx64_lo = svunpklo_s64(hashes_vec);
     return reinterpret_cast<typename xsimd::batch<T, A>::register_type>(
-          svld1_gather_s64index_s64(
-                svptrue_b64(), 
-                reinterpret_cast<const int64_t*>(base), 
-                idx64_lo));
+        svld1_gather_s64index_s64(
+            svptrue_b64(), reinterpret_cast<const int64_t*>(base), idx64_lo));
   }
 #endif
 
@@ -881,14 +873,12 @@ struct Gather<T, int32_t, A, 8> {
     constexpr int N = Batch128<int32_t>::size;
     alignas(A::alignment()) int32_t indices[N];
     vindex.store_unaligned(indices);
-    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices); 
+    svint32_t hashes_vec = svld1_s32(svptrue_b32(), indices);
     svint64_t idx64_lo = svunpklo_s64(hashes_vec);
     svint64_t result = svld1_gather_s64index_s64(
-                mask,
-                reinterpret_cast<const int64_t*>(base), 
-                idx64_lo);
+        mask, reinterpret_cast<const int64_t*>(base), idx64_lo);
     return reinterpret_cast<typename xsimd::batch<T, A>::register_type>(
-          svsel_s64(mask, result, src));
+        svsel_s64(mask, result, src));
   }
 #endif
 
@@ -949,16 +939,14 @@ struct Gather<T, int64_t, A, 8> {
   }
 #endif
 
-#if XSIMD_WITH_SVE  
+#if XSIMD_WITH_SVE
   template <int kScale>
   static xsimd::batch<T, A>
   apply(const T* base, const int64_t* indices, const xsimd::sve& arch) {
-    svint64_t hashes_vec = svld1_s64(svptrue_b64(), indices); 
+    svint64_t hashes_vec = svld1_s64(svptrue_b64(), indices);
     return reinterpret_cast<typename xsimd::batch<T, A>::register_type>(
-          svld1_gather_s64index_s64(
-                svptrue_b64(), 
-                reinterpret_cast<const int64_t*>(base), 
-                hashes_vec));
+        svld1_gather_s64index_s64(
+            svptrue_b64(), reinterpret_cast<const int64_t*>(base), hashes_vec));
   }
 #endif
 
@@ -987,11 +975,9 @@ struct Gather<T, int64_t, A, 8> {
       const int64_t* indices,
       const xsimd::sve& arch) {
     svint64_t result = svld1_gather_s64index_s64(
-                mask,
-                reinterpret_cast<const int64_t*>(base), 
-                svld1_s64(mask, indices));
+        mask, reinterpret_cast<const int64_t*>(base), svld1_s64(mask, indices));
     return reinterpret_cast<typename xsimd::batch<T, A>::register_type>(
-          svsel_s64(mask, result, src));
+        svsel_s64(mask, result, src));
   }
 #endif
 
@@ -1024,11 +1010,9 @@ struct Gather<T, int64_t, A, 8> {
     alignas(A::alignment()) int64_t indices[vindex.size];
     vindex.store_aligned(indices);
     svint64_t result = svld1_gather_s64index_s64(
-                mask,
-                reinterpret_cast<const int64_t*>(base), 
-                svld1_s64(mask, indices));
+        mask, reinterpret_cast<const int64_t*>(base), svld1_s64(mask, indices));
     return reinterpret_cast<typename xsimd::batch<T, A>::register_type>(
-          svsel_s64(mask, result, src));
+        svsel_s64(mask, result, src));
   }
 #endif
 
@@ -1078,9 +1062,8 @@ template <typename A>
 xsimd::batch<int16_t, A> pack32(
     xsimd::batch<int32_t, A> x,
     xsimd::batch<int32_t, A> y,
-    const xsimd::sve&) {   
-  return svuzp1_s16(svreinterpret_s16_s32(x), 
-                    svreinterpret_s16_s32(y));
+    const xsimd::sve&) {
+  return svuzp1_s16(svreinterpret_s16_s32(x), svreinterpret_s16_s32(y));
 }
 #endif
 
@@ -1504,10 +1487,9 @@ struct Filter<T, A, 2> {
         compressed[idx++] = data.get(i);
       }
     }
-    return xsimd::load_unaligned(compressed); 
+    return xsimd::load_unaligned(compressed);
   }
 #endif
-
 };
 
 template <typename T, typename A>
@@ -1545,8 +1527,7 @@ struct Filter<T, A, 8> {
 #if XSIMD_WITH_SVE
   static xsimd::batch<T, A>
   apply(xsimd::batch<T, A> data, int mask, const xsimd::sve&) {
-    auto vindex =
-        xsimd::batch<int64_t, A>::load_aligned(byteSetBits[mask]);
+    auto vindex = xsimd::batch<int64_t, A>::load_aligned(byteSetBits[mask]);
     if constexpr (std::is_same_v<T, double>) {
       svfloat64_t result = svtbl_f64(data.data, svreinterpret_u64(vindex.data));
       return reinterpret_cast<decltype(data.data)>(result);
@@ -1960,7 +1941,6 @@ struct ReinterpretBatch<uint32_t, uint64_t, A> {
 #endif
 
 } // namespace detail
-
 
 template <typename T, typename U, typename A>
 xsimd::batch<T, A> reinterpretBatch(xsimd::batch<U, A> data, const A& arch) {

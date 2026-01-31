@@ -36,6 +36,8 @@
 #include "bolt/vector/BaseVector.h"
 #include "bolt/vector/tests/utils/VectorMaker.h"
 
+#include "bolt/dwio/parquet/encryption/KmsClient.h"
+
 using namespace bytedance::bolt;
 using namespace bytedance::bolt::common;
 using namespace bytedance::bolt::dwio::common;
@@ -1147,6 +1149,90 @@ TEST_F(ParquetReaderTest, arrayWithEmptyEntry) {
   rowReader->next(7, result);
   assertEqualVectorPart(expected, result, 0);
 }
+
+TEST_F(ParquetReaderTest, readEncryptedParquet) {
+  auto rowType = ROW({"id", "name", "salary"}, {BIGINT(), VARCHAR(), BIGINT()});
+
+  bytedance::bolt::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+
+  std::string encryptionData = getExampleFilePath("encrypted_sample.parquet");
+
+  auto reader = createReader(encryptionData, readerOpts);
+  RowReaderOptions rowReaderOpts;
+  rowReaderOpts.setScanSpec(makeScanSpec(rowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto numRows = reader->numberOfRows();
+  ASSERT_TRUE(numRows.has_value());
+  EXPECT_EQ(numRows.value(), 3);
+
+  auto type = reader->typeWithId();
+  EXPECT_EQ(type->size(), rowType->size());
+  EXPECT_EQ(type->type()->kind(), TypeKind::ROW);
+
+  auto result = BaseVector::create(rowType, 3, leafPool_.get());
+  auto rowsRead = rowReader->next(3, result);
+  EXPECT_EQ(rowsRead, 3);
+  EXPECT_EQ(result->size(), 3);
+
+  auto ids = result->as<RowVector>()->childAt(0)->asFlatVector<int64_t>();
+  EXPECT_EQ(ids->valueAt(0), 1);
+}
+
+TEST_F(ParquetReaderTest, readEncryptedParquetAllValues) {
+  auto rowType = ROW({"id", "name", "salary"}, {BIGINT(), VARCHAR(), BIGINT()});
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({1, 2, 3}),
+      makeFlatVector<std::string>({"Alice", "Bob", "Charlie"}),
+      makeFlatVector<int64_t>({100000, 90000, 110000}),
+  });
+
+  assertReadWithExpected("encrypted_sample.parquet", rowType, expected);
+}
+
+TEST_F(ParquetReaderTest, readEncryptedParquetWithProjection) {
+  auto projectedType = ROW({"name", "salary"}, {VARCHAR(), BIGINT()});
+
+  const std::string sample(getExampleFilePath("encrypted_sample.parquet"));
+
+  bytedance::bolt::dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  readerOptions.setFileSchema(projectedType);
+  auto reader = createReader(sample, readerOptions);
+
+  auto rowReaderOpts = getReaderOpts(projectedType);
+  auto scanSpec = makeScanSpec(projectedType);
+  rowReaderOpts.setScanSpec(scanSpec);
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto expected = makeRowVector({
+      makeFlatVector<std::string>({"Alice", "Bob", "Charlie"}),
+      makeFlatVector<int64_t>({100000, 90000, 110000}),
+  });
+
+  auto result = BaseVector::create(projectedType, 3, leafPool_.get());
+  auto rowsRead = rowReader->next(3, result);
+  EXPECT_EQ(rowsRead, 3);
+  EXPECT_EQ(result->size(), 3);
+  assertEqualVectorPart(expected, result, 0);
+}
+
+TEST_F(ParquetReaderTest, readEncryptedParquetWithFilters) {
+  auto rowType = ROW({"id", "name", "salary"}, {BIGINT(), VARCHAR(), BIGINT()});
+
+  FilterMap filters;
+  filters.insert({"salary", exec::greaterThan(int64_t(100000))});
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>(1, [](auto row) { return 3; }),
+      makeFlatVector<std::string>({"Charlie"}),
+      makeFlatVector<int64_t>(1, [](auto row) { return 110000; }),
+  });
+
+  assertReadWithFilters(
+      "encrypted_sample.parquet", rowType, std::move(filters), expected);
+}
+
 TEST_F(ParquetReaderTest, readBinaryAsStringFromNation) {
   const std::string filename("nation.parquet");
   const std::string sample(getExampleFilePath(filename));
@@ -1498,4 +1584,110 @@ TEST_F(ParquetReaderTest, readDisputedNoLogicalType) {
     total += n;
   }
   EXPECT_GT(total, 0);
+}
+
+TEST_F(ParquetReaderTest, dcMapSimple) {
+  // dcmapSimple.parquet stores all the values inside dynamic columns.
+  const std::string sample(getExampleFilePath("dcmapSimple.parquet"));
+  // scanSpec we get from HMS will be map(varchar, varchar)
+  // so DCMap reader should be able to handle mismatched types.
+  auto rowType =
+      ROW({"name", "age", "accounts"},
+          {VARCHAR(), BIGINT(), MAP(VARCHAR(), VARCHAR())});
+  dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  auto reader = createReader(sample, readerOpts);
+
+  RowReaderOptions rowReaderOpts;
+  rowReaderOpts.setScanSpec(makeScanSpec(rowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto expected = makeRowVector({
+      makeFlatVector<StringView>({"xeonliu", "wukong"}),
+      makeFlatVector<int64_t>({18, 500}),
+      makeMapVector<StringView, StringView>({
+          {{"baidu", "2020-01-01"},
+           {"douyin", "2012-04-05"},
+           {"tencent", "2011-02-03"}},
+          {{"baidu", "2015-01-01"}, {"toutiao", "2013-02-04"}},
+      }),
+  });
+
+  assertReadWithReaderAndExpected(rowType, *rowReader, expected, *leafPool_);
+}
+
+TEST_F(ParquetReaderTest, dcMapNested) {
+  const std::string sample(getExampleFilePath("dcmapNested.parquet"));
+  auto rowType =
+      ROW({"name", "age", "contact"},
+          {VARCHAR(),
+           BIGINT(),
+           ROW({"city", "phone"},
+               {VARCHAR(),
+                ROW({"key_value", "dynamic_column"},
+                    {MAP(VARCHAR(), VARCHAR()),
+                     ROW({"value_0",
+                          "value_1",
+                          "value_2",
+                          "value_3",
+                          "value_4",
+                          "value_5"},
+                         {VARCHAR(),
+                          VARCHAR(),
+                          VARCHAR(),
+                          VARCHAR(),
+                          VARCHAR(),
+                          VARCHAR()})})})});
+
+  dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  auto reader = createReader(sample, readerOpts);
+
+  RowReaderOptions rowReaderOpts;
+  rowReaderOpts.setScanSpec(makeScanSpec(rowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto expected = makeRowVector({
+      makeFlatVector<StringView>({"xeonliu", "wukong"}),
+      makeFlatVector<int64_t>({18, 500}),
+      makeRowVector(
+          {makeFlatVector<StringView>({"Shanghai", "Beijing"}),
+           makeMapVector<StringView, StringView>(
+               {{{"tangchenyipin", "021-88880001"},
+                 {"zhongliangyihao", "021-88880002"},
+                 {"hepingfandian", "021-88880003"}},
+                {{"erhuan", "010-66660001"},
+                 {"sanhuan", "010-66660002"},
+                 {"sihuan", "010-66660003"}}})}),
+  });
+
+  assertReadWithReaderAndExpected(rowType, *rowReader, expected, *leafPool_);
+}
+
+TEST_F(ParquetReaderTest, dcMapContainsMap) {
+  // dcmapContainsMap.parquet stores values of "tencent" and "toutiao"
+  // in dynamic columns and other kv pairs in MAP part of DCMAP.
+  const std::string sample(getExampleFilePath("dcmapContainsMap.parquet"));
+  // scanSpec we get from HMS will be map(varchar, varchar)
+  // so DCMap reader should be able to handle mismatched types.
+  auto rowType =
+      ROW({"name", "age", "accounts"},
+          {VARCHAR(), BIGINT(), MAP(VARCHAR(), VARCHAR())});
+  dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  auto reader = createReader(sample, readerOpts);
+
+  RowReaderOptions rowReaderOpts;
+  rowReaderOpts.setScanSpec(makeScanSpec(rowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto expected = makeRowVector({
+      makeFlatVector<StringView>({"xeon_liu", "wukong"}),
+      makeFlatVector<int64_t>({18, 500}),
+      makeMapVector<StringView, StringView>({
+          {{"douyin", "2012-04-05"},
+           {"baidu", "2010-01-01"},
+           {"tencent", "2011-02-03"}},
+          {{"toutiao", "2013-02-04"}, {"baidu", "2015-01-01"}},
+      }),
+  });
+
+  assertReadWithReaderAndExpected(rowType, *rowReader, expected, *leafPool_);
 }

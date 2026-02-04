@@ -28,6 +28,7 @@
  * --------------------------------------------------------------------------
  */
 
+#include <folly/ScopeGuard.h>
 #include <glog/logging.h>
 #include <cstdint>
 #include <memory>
@@ -78,9 +79,9 @@ TableScan::TableScan(
           driverCtx_->queryConfig().tableScanGetOutputTimeLimitMs()),
       enableEstimateBytesPerRow_(
           driverCtx_->queryConfig().iskEstimateRowSizeBasedOnSampleEnabled()),
-      asyncThreadCtx_(
+      asyncThreadCtx_(std::make_shared<connector::AsyncThreadCtx>(
           driverCtx_->queryConfig().preloadBytesLimit(),
-          driverCtx_->queryConfig().adaptivePreloadEnabled()) {
+          driverCtx_->queryConfig().adaptivePreloadEnabled())) {
   for (const auto& type : asRowType(outputType_)->children()) {
     if (!type->isFixedWidth()) {
       isFixedWidthOutputType_ = false;
@@ -176,13 +177,13 @@ RowVectorPtr TableScan::getOutput() {
         blockingReason_ = BlockingReason::kYield;
         blockingFuture_ = ContinueFuture{folly::Unit{}};
         // A point for test code injection.
-        TestValue::adjust(
+        BOLT_TEST_ADJUST(
             "bytedance::bolt::exec::TableScan::getOutput::bail", this);
         return nullptr;
       }
 
       // A point for test code injection.
-      TestValue::adjust("bytedance::bolt::exec::TableScan::getOutput", this);
+      BOLT_TEST_ADJUST("bytedance::bolt::exec::TableScan::getOutput", this);
 
       exec::Split split;
       curStatus_ = "getOutput: task->getSplitOrFuture";
@@ -286,7 +287,7 @@ RowVectorPtr TableScan::getOutput() {
             planNodeId(),
             connectorPool_,
             nullptr,
-            &asyncThreadCtx_);
+            asyncThreadCtx_.get());
         dataSource_ = connector_->createDataSource(
             outputType_,
             tableHandle_,
@@ -458,7 +459,8 @@ void TableScan::preload(std::shared_ptr<connector::ConnectorSplit> split) {
            planNodeId(),
            connectorPool_,
            nullptr,
-           &asyncThreadCtx_),
+           asyncThreadCtx_.get()),
+       asyncThreadCtx = asyncThreadCtx_,
        task = operatorCtx_->task(),
        pendingDynamicFilters = pendingDynamicFilters_,
        split]() -> std::unique_ptr<connector::DataSource> {
@@ -472,6 +474,20 @@ void TableScan::preload(std::shared_ptr<connector::ConnectorSplit> split) {
                return *static_cast<std::string*>(debugString);
              },
              &debugString});
+
+        // let TableScan::close() wait for this AsyncSource to finish
+        auto guard = folly::makeGuard([&] {
+          try {
+            if (ctx->asyncThreadCtx()) {
+              ctx->asyncThreadCtx()->out();
+            }
+          } catch (std::exception& e) {
+            LOG(ERROR) << "Exception in TableScan::preload guard: " << e.what();
+          }
+        });
+        if (ctx->asyncThreadCtx()) {
+          ctx->asyncThreadCtx()->in();
+        }
         auto ptr = connector->createDataSource(
             type, table, columns, ctx, task->queryCtx()->queryConfig());
         if (task->isCancelled()) {
@@ -489,7 +505,7 @@ void TableScan::preload(std::shared_ptr<connector::ConnectorSplit> split) {
 void TableScan::checkPreload() {
   auto executor = connector_->executor();
   if (maxSplitPreloadPerDriver_ == 0 || !executor ||
-      !connector_->supportsSplitPreload() || !asyncThreadCtx_.allowPreload()) {
+      !connector_->supportsSplitPreload() || !asyncThreadCtx_->allowPreload()) {
     return;
   }
   if (dataSource_->allPrefetchIssued()) {
@@ -500,7 +516,14 @@ void TableScan::checkPreload() {
           [executor, this](std::shared_ptr<connector::ConnectorSplit> split) {
             preload(split);
 
-            executor->add([connectorSplit = split]() mutable {
+            auto hiveSplit = std::dynamic_pointer_cast<
+                const connector::hive::HiveConnectorSplit>(split);
+            int64_t preloadBytes = hiveSplit ? hiveSplit->length : 0;
+            connector::AsyncThreadCtx::Guard guard(
+                asyncThreadCtx_.get(), preloadBytes);
+            executor->add([connectorSplit = split,
+                           ctx = asyncThreadCtx_,
+                           inGuard = std::move(guard)]() mutable {
               connectorSplit->dataSource->prepare();
               connectorSplit.reset();
             });
@@ -572,7 +595,7 @@ void TableScan::close() {
   uint64_t waitMs;
   {
     MicrosecondTimer timer(&waitMs);
-    asyncThreadCtx_.wait();
+    asyncThreadCtx_->wait();
   }
 
   LOG_IF(INFO, waitMs > 60000)

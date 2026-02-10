@@ -48,6 +48,8 @@
 namespace bytedance::bolt::parquet {
 
 constexpr int16_t kNonPageOrdinal = static_cast<int16_t>(-1);
+constexpr uint32_t kDefaultMaxPageHeaderSize = 16 * 1024 * 1024;
+
 struct CryptoContext {
   CryptoContext(
       bool startWithDictionaryPage,
@@ -583,7 +585,7 @@ class PageReader {
   int32_t rowNumberBias_{0};
 
   // Manages concatenating null flags read from multiple pages. If a
-  // readWithVisitor is contined in one page, the visitor places the
+  // readWithVisitor is continued in one page, the visitor places the
   // nulls in the reader. If many pages are covered, some with and
   // some without nulls, we must make a a concatenated null flags to
   // return to the caller.

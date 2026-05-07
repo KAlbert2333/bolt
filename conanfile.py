@@ -32,6 +32,7 @@ icu = f"icu{postfix}"
 gperftools = f"gperftools{postfix}"
 liburing = f"liburing{postfix}"
 llvm_core = f"llvm-core{postfix}"
+paimon_cpp = f"paimon-cpp{postfix}"
 
 
 class TorchOption:
@@ -82,9 +83,12 @@ class BoltConan(ConanFile):
         "enable_parquet": [True, False],
         "enable_orc": [True, False],
         "enable_txt": [True, False],
+        "enable_paimon": [True, False],
         # file system options
         "enable_hdfs": [True, False],
         "enable_s3": [True, False],
+        "enable_gcs": [True, False],
+        "enable_abfs": [True, False],
         "use_arrow_hdfs": [True, False],
         "enable_asan": [True, False],
         "enable_jit": [True, False],
@@ -107,9 +111,12 @@ class BoltConan(ConanFile):
         "enable_parquet": True,
         "enable_orc": True,
         "enable_txt": True,
+        "enable_paimon": True,
         # file system options
         "enable_hdfs": True,
         "enable_s3": False,
+        "enable_gcs": False,
+        "enable_abfs": False,
         "use_arrow_hdfs": True,
         "enable_arrow_connector": False,
         "enable_jit": True,
@@ -127,7 +134,7 @@ class BoltConan(ConanFile):
     FB_VERSION = "2022.10.31.00"
 
     # global compiler options
-    BOLT_GLOABL_FLAGS = "-Werror=return-type"
+    BOLT_GLOBAL_FLAGS = "-Werror=return-type"
 
     build_policy = "missing"
 
@@ -181,16 +188,28 @@ class BoltConan(ConanFile):
         )
         self.requires("arrow/15.0.1-oss", transitive_headers=True, transitive_libs=True)
         if self.options.get_safe("enable_jit"):
-            self.requires("llvm-core/13.0.0")
+            self.requires("llvm-core/19.1.7-bolt")
 
         if self.options.get_safe("enable_s3"):
             self.requires(
                 "aws-sdk-cpp/1.11.692", transitive_headers=True, transitive_libs=True
             )
             self.requires("aws-c-common/0.12.5", force=True)
+        if self.options.get_safe("enable_gcs"):
+            self.requires(
+                "google-cloud-cpp/[>=2.10 <3]",
+                transitive_headers=True,
+                transitive_libs=True,
+            )
+        if self.options.get_safe("enable_abfs"):
+            self.requires(
+                "azure-sdk-for-cpp/1.16.1",
+                transitive_headers=True,
+                transitive_libs=True,
+            )
         self.requires("simdjson/3.12.3", transitive_headers=True)
         self.requires(
-            "sonic-cpp/1.0.2-fix", transitive_headers=True, transitive_libs=True
+            "sonic-cpp/1.0.2-bolt", transitive_headers=True, transitive_libs=True
         )
         self.requires(
             f"protobuf/{protobuf_version}",
@@ -215,6 +234,7 @@ class BoltConan(ConanFile):
         self.requires("ryu/2.0.1", transitive_headers=True, transitive_libs=True)
         self.requires("cpr/1.10.5")
         self.requires("zlib/[>=1.3.1 <2]", force=True)
+        self.requires("zstd/1.5.7", override=True)
         self.requires(
             "flex/2.6.4",
             visible=False,
@@ -263,6 +283,8 @@ class BoltConan(ConanFile):
         self.requires("libbacktrace/cci.20210118")
         if self.options.get_safe("spark_compatible"):
             self.requires("celeborn-cpp-client/main-20251212")
+        if self.options.get_safe("enable_paimon"):
+            self.requires("paimon-cpp/0.0.3-bolt")
         if self.options.get_safe("enable_testutil"):
             self.requires("gtest/1.17.0", force=True)
             self.requires("duckdb/0.8.1")
@@ -275,7 +297,7 @@ class BoltConan(ConanFile):
         self.tool_requires("ninja/1.11.1")
         self.tool_requires("protobuf/<host_version>")
         self.tool_requires("thrift/<host_version>")
-        if os.getenv("BOLT_BUILD_TESTING", "OFF") == "ON":
+        if not self.conf.get("tools.build:skip_test", default=True):
             self.test_requires("jemalloc/5.3.0")
 
     def layout(self):
@@ -298,6 +320,8 @@ class BoltConan(ConanFile):
         if self.options.get_safe("enable_s3"):
             s3_opt = self.options["aws-sdk-cpp/*"]
             setattr(s3_opt, "text-to-speech", False)
+        self.options[paimon_cpp].shared = False
+        self.options[paimon_cpp].with_avro = True
 
         arrow_simd_level = "default"
         if str(self.settings.arch) in ["x86", "x86_64"]:
@@ -335,6 +359,7 @@ class BoltConan(ConanFile):
             self.options[llvm_core].with_z3 = False
             self.options[llvm_core].with_zstd = False
             self.options[llvm_core].with_ffi = False
+            self.options[llvm_core].with_clang = True
 
         if self.options.get_safe("enable_hdfs") and self.options.get_safe(
             "use_arrow_hdfs"
@@ -393,45 +418,15 @@ class BoltConan(ConanFile):
 
         if str(self.settings.arch) in ["x86", "x86_64"]:
             flags = (
-                f"{self.BOLT_GLOABL_FLAGS} -mavx2 -mfma -mavx -mf16c -mlzcnt -mbmi2 "
+                f"{self.BOLT_GLOBAL_FLAGS} -mavx2 -mfma -mavx -mf16c -mlzcnt -mbmi2 "
             )
             tc.cache_variables["CMAKE_CXX_FLAGS"] = flags
             tc.cache_variables["CMAKE_C_FLAGS"] = flags
 
-        #Check SVE
-        import subprocess
-        sve_supported = False
-        sve2_supported = False
-        result = subprocess.run(['lscpu'], capture_output=True, text=True, timeout=3)
-        if result.returncode == 0:
-            cpu_info = result.stdout.lower()
-            if 'sve' in cpu_info:
-                sve_supported = True
-            if 'sve2' in cpu_info :
-                sve2_supported = True
-            
-        if str(self.settings.arch) in ["armv8", "arm"]:
-            if sve2_supported:
-                # Support CRC & NEON & SVE2 on ARMv8
-                flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv8.3-a+sve2-bitperm -msve-vector-bits=256 -DSVE_BITS=256"
-            elif sve_supported:
-                # Support CRC & NEON & SVE on ARMv8
-                flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv8.3-a+sve -msve-vector-bits=256 -DSVE_BITS=256"
-            else:
-                # Support CRC & NEON on ARMv8
-                flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv8.3-a"
+        if str(self.settings.arch) in ["armv8", "arm", "armv9"]:
+            flags = self._get_arm_cpu_flags()
             tc.cache_variables["CMAKE_CXX_FLAGS"] = flags
             tc.cache_variables["CMAKE_C_FLAGS"] = flags
-        elif str(self.settings.arch) in ["armv9"]:
-            # gcc 12+ https://www.phoronix.com/news/GCC-12-ARMv9-march-armv9-a
-            if sve2_supported:
-                flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv9-a+sve2-bitperm -msve-vector-bits=256 -DSVE_BITS=256"
-            elif sve_supported:
-                flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv9-a+sve -msve-vector-bits=256 -DSVE_BITS=256"
-            else:
-                flags = f"{self.BOLT_GLOABL_FLAGS} -march=armv9-a"
-            tc.variables["CMAKE_C_FLAGS"] = flags
-            tc.variables["CMAKE_CXX_FLAGS"] = flags
         if (
             self.options.enable_torch is not None
             and self.options.enable_torch.value is not None
@@ -460,9 +455,21 @@ class BoltConan(ConanFile):
         tc.cache_variables["BOLT_ENABLE_TXT"] = (
             "ON" if self.options.enable_txt else "OFF"
         )
+        tc.cache_variables["BOLT_ENABLE_PAIMON"] = (
+            "ON" if self.options.enable_paimon else "OFF"
+        )
         if self.options.get_safe("enable_jit"):
             tc.cache_variables["ENABLE_BOLT_JIT"] = "ON"
             tc.preprocessor_definitions["ENABLE_BOLT_JIT"] = 1
+
+            # Verify clang exists in llvm-core package.
+            llvm_dep = self.dependencies["llvm-core"]
+            clang_path = os.path.join(str(llvm_dep.package_folder), "bin", "clang")
+            if not os.path.exists(clang_path):
+                raise Exception(
+                    f"clang not found at {clang_path}. "
+                    "Ensure llvm-core is built with -o llvm-core/*:with_clang=True"
+                )
 
             # TODO: Refactor the IR codegen of expression evaluation
             # Disable it right now
@@ -521,6 +528,14 @@ class BoltConan(ConanFile):
         if self.options.get_safe("enable_s3"):
             tc.cache_variables["BOLT_ENABLE_S3"] = "ON"
 
+        tc.cache_variables["BOLT_ENABLE_GCS"] = "OFF"
+        if self.options.get_safe("enable_gcs"):
+            tc.cache_variables["BOLT_ENABLE_GCS"] = "ON"
+
+        tc.cache_variables["BOLT_ENABLE_ABFS"] = "OFF"
+        if self.options.get_safe("enable_abfs"):
+            tc.cache_variables["BOLT_ENABLE_ABFS"] = "ON"
+
         tc.cache_variables["BOLT_FORCE_COLORED_OUTPUT"] = "ON"
         if self.options.enable_crc:
             tc.cache_variables["BOLT_ENABLE_CRC"] = "ON"
@@ -535,16 +550,17 @@ class BoltConan(ConanFile):
         if self.options.get_safe("enable_perf"):
             tc.cache_variables["BOLT_ENABLE_PERF"] = "ON"
 
-        # for CI / testing / benchmarks
-        if os.getenv("BOLT_BUILD_TESTING", "OFF") == "ON":
+        # benchmark and coverage should NOT be in conan options/configurations
+        if not self.conf.get("tools.build:skip_test", default=True):
             tc.cache_variables["BOLT_BUILD_TESTING"] = "ON"
-        if os.getenv("BOLT_BUILD_BENCHMARKS_BASIC", "OFF") == "ON":
-            tc.cache_variables["BOLT_BUILD_BENCHMARKS_BASIC"] = "ON"
+
+            if os.getenv("BOLT_BUILD_TESTING_WITH_COVERAGE", "OFF") == "ON":
+                tc.cache_variables["BOLT_BUILD_TESTING_WITH_COVERAGE"] = "ON"
+
         if os.getenv("BOLT_BUILD_BENCHMARKS", "OFF") == "ON":
             tc.cache_variables["BOLT_BUILD_BENCHMARKS"] = "ON"
-        if os.getenv("BOLT_BUILD_TESTING_WITH_COVERAGE", "OFF") == "ON":
             tc.cache_variables["BOLT_BUILD_TESTING"] = "ON"
-            tc.cache_variables["BOLT_BUILD_TESTING_WITH_COVERAGE"] = "ON"
+            tc.cache_variables["BOLT_BUILD_BENCHMARKS_BASIC"] = "ON"
 
         tc.generate()
 
@@ -632,6 +648,14 @@ class BoltConan(ConanFile):
             self.cpp_info.components["bolt_engine"].requires.append(
                 "llvm-core::llvm-core"
             )
+            if self.settings.os == "Macos":
+                self.cpp_info.components["bolt_engine"].exelinkflags.append(
+                    "-Wl,-export_dynamic"
+                )
+            elif self.settings.os == "Linux":
+                self.cpp_info.components["bolt_engine"].exelinkflags.append(
+                    "-Wl,--export-dynamic-symbol=jit_*"
+                )
         if self.options.get_safe("enable_s3"):
             self.cpp_info.components["bolt_engine"].requires.append(
                 "aws-c-common::aws-c-common"
@@ -639,6 +663,15 @@ class BoltConan(ConanFile):
         if self.options.get_safe("spark_compatible"):
             self.cpp_info.components["bolt_engine"].requires.append(
                 "celeborn-cpp-client::celeborn-cpp-client"
+            )
+        if self.options.get_safe("enable_paimon"):
+            self.cpp_info.components["bolt_engine"].requires.extend(
+                [
+                    "paimon-cpp::core",
+                    "paimon-cpp::format_avro",
+                    "paimon-cpp::avro",
+                    "paimon-cpp::fs_local",
+                ]
             )
 
         if self.options.get_safe("enable_testutil"):
@@ -651,3 +684,68 @@ class BoltConan(ConanFile):
                 "gtest::gtest",
                 "duckdb::duckdb",
             ]
+
+    def _get_arm_cpu_flags(self) -> str:
+        """
+        Detect specific ARM CPU and return optimal compiler flags.
+
+        Detection:
+        Apple Silicon on Darwin -> -mcpu=apple-m1+crc
+        Linux ARM64 via MIDR_EL1 -> specific -mcpu flags
+        Fallback to generic -march flags
+        """
+        base_flags = self.BOLT_GLOBAL_FLAGS
+
+        # Apple Silicon detection (macOS)
+        # Note: Conan uses "Macos" not "macOS", see https://docs.conan.io/2/reference/config_files/settings.html
+        if self.settings.os == "Macos" and platform.machine() == "arm64":
+            self.output.info("Detected Apple Silicon, using -mcpu=apple-m1+crc")
+            return f"{base_flags} -mcpu=apple-m1+crc"
+
+        # Linux ARM64 detection via MIDR_EL1
+        if self.settings.os == "Linux":
+            midr_path = "/sys/devices/system/cpu/cpu0/regs/identification/midr_el1"
+            try:
+                with open(midr_path, "r") as f:
+                    midr_value = int(f.read().strip(), 16)
+
+                # Extract PartNum (bits 15:4) and Implementer (bits 31:24)
+                part_num = (midr_value >> 4) & 0xFFF
+                implementer = (midr_value >> 24) & 0xFF
+
+                # CPU flag mapping based on PartNum
+                cpu_flags_map = {
+                    0xD0C: "neoverse-n1",  # AWS Graviton2, Ampere Altra
+                    0xD49: "neoverse-n2",  # AWS Graviton3
+                    0xD40: "neoverse-v1",  # Neoverse V1
+                    0xD4F: "neoverse-v2",  # AWS Graviton4, NVIDIA Grace
+                }
+
+                if part_num in cpu_flags_map:
+                    cpu_name = cpu_flags_map[part_num]
+                    mcpu_flag = f"-mcpu={cpu_name}"
+
+                    # NVIDIA Grace (Neoverse V2 with NVIDIA implementer)
+                    if part_num == 0xD4F and implementer == 0x4E:
+                        mcpu_flag += "+crypto+sha3+sm4+sve2-aes+sve2-sha3+sve2-sm4"
+                        self.output.info(
+                            f"Detected NVIDIA Grace CPU, using {mcpu_flag}"
+                        )
+                    else:
+                        self.output.info(f"Detected ARM {cpu_name}, using {mcpu_flag}")
+
+                    return f"{base_flags} {mcpu_flag}"
+                else:
+                    self.output.info(
+                        f"Unknown ARM CPU (PartNum: 0x{part_num:x}), using fallback"
+                    )
+            except (FileNotFoundError, PermissionError, ValueError) as e:
+                self.output.warning(f"Could not detect ARM CPU via MIDR_EL1: {e}")
+
+        # Fallback based on arch setting (preserves original behavior)
+        if str(self.settings.arch) == "armv9":
+            self.output.info("Using fallback -march=armv9-a")
+            return f"{base_flags} -march=armv9-a"
+        else:
+            self.output.info("Using fallback -march=armv8.3-a")
+            return f"{base_flags} -march=armv8.3-a"

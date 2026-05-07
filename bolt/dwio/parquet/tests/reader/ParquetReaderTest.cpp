@@ -31,9 +31,21 @@
 #include "bolt/dwio/parquet/reader/ParquetReader.h"
 #include <type/HugeInt.h>
 #include <type/Type.h>
+#include <cstdlib>
+#include <filesystem>
+#include "bolt/core/QueryCtx.h"
 #include "bolt/dwio/parquet/tests/ParquetTestBase.h"
+#include "bolt/dwio/parquet/writer/Writer.h"
+#include "bolt/exec/tests/utils/TempFilePath.h"
+#include "bolt/expression/Expr.h"
 #include "bolt/expression/ExprToSubfieldFilter.h"
+#include "bolt/expression/StringWriter.h"
+#include "bolt/expression/UdfTypeResolver.h"
+#include "bolt/functions/prestosql/registration/RegistrationFunctions.h"
+#include "bolt/functions/sparksql/VariantEncoding.h"
+#include "bolt/functions/sparksql/VariantFunctions.h"
 #include "bolt/vector/BaseVector.h"
+#include "bolt/vector/VariantVector.h"
 #include "bolt/vector/tests/utils/VectorMaker.h"
 
 #include "bolt/dwio/parquet/encryption/KmsClient.h"
@@ -44,6 +56,36 @@ using namespace bytedance::bolt::dwio::common;
 using namespace bytedance::bolt::parquet;
 
 using bytedance::bolt::test::emptyArray;
+
+namespace {
+std::string getVariantFixturePath(const std::string& fileName) {
+  const std::filesystem::path cwd = std::filesystem::current_path();
+  const std::filesystem::path sourceDir =
+      std::filesystem::path(__FILE__).parent_path();
+
+  const std::filesystem::path candidates[] = {
+      // Standard test layout in build tree.
+      cwd / "../examples" / fileName,
+      // Some builds may copy fixtures next to the test binary.
+      cwd / fileName,
+      // Fallback to source tree (works when build tree doesn't copy the file).
+      sourceDir / "../examples" / fileName,
+  };
+
+  for (const auto& p : candidates) {
+    std::error_code ec;
+    if (std::filesystem::exists(p, ec) && !ec) {
+      return std::filesystem::absolute(p).string();
+    }
+  }
+
+  BOLT_FAIL(
+      "VARIANT fixture not found: {}, cwd: {}, source: {}",
+      fileName,
+      cwd.string(),
+      sourceDir.string());
+}
+} // namespace
 
 class ParquetReaderTest : public ParquetTestBase {
  public:
@@ -748,6 +790,56 @@ TEST_F(ParquetReaderTest, parseMapKeyValueAsMap) {
   assertReadWithReaderAndExpected(fileSchema, *rowReader, expected, *leafPool_);
 }
 
+TEST_F(ParquetReaderTest, parseRowArrayTest) {
+  // schema:
+  //   optionalPrimitive:int
+  //   requiredPrimitive:int
+  //   repeatedPrimitive:array<int>
+  //   optionalMessage:struct<someId:int>
+  //   requiredMessage:struct<someId:int>
+  //   repeatedMessage:array<struct<someId:int>>
+  const std::string sample(
+      getExampleFilePath("proto-struct-with-array.parquet"));
+
+  dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(sample, readerOptions);
+  EXPECT_EQ(reader->numberOfRows(), 1ULL);
+  auto type = reader->typeWithId();
+  EXPECT_EQ(type->size(), 6ULL);
+  auto col6_type = type->childAt(5);
+  EXPECT_EQ(col6_type->type()->kind(), TypeKind::ARRAY);
+  auto col6_1_type = col6_type->childAt(0);
+  EXPECT_EQ(col6_1_type->type()->kind(), TypeKind::ROW);
+
+  auto outputRowType =
+      ROW({"optionalPrimitive",
+           "requiredPrimitive",
+           "repeatedPrimitive",
+           "optionalMessage",
+           "requiredMessage",
+           "repeatedMessage"},
+          {INTEGER(),
+           INTEGER(),
+           ARRAY(INTEGER()),
+           ROW({"someId"}, {INTEGER()}),
+           ROW({"someId"}, {INTEGER()}),
+           ARRAY(ROW({"someId"}, {INTEGER()}))});
+  auto rowReaderOpts = getReaderOpts(outputRowType);
+  rowReaderOpts.setScanSpec(makeScanSpec(outputRowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+  VectorPtr result = BaseVector::create(outputRowType, 0, &*leafPool_);
+
+  ASSERT_TRUE(rowReader->next(1, result));
+  // data: 10, 9, <empty>, null, {9}, 2 elements starting at 0 {{9}, {10}}}
+  auto structArray = result->as<RowVector>()->childAt(5)->as<ArrayVector>();
+  auto structEle = structArray->elements()
+                       ->as<RowVector>()
+                       ->childAt(0)
+                       ->asFlatVector<int32_t>()
+                       ->valueAt(0);
+  EXPECT_EQ(structEle, 9);
+}
+
 TEST_F(ParquetReaderTest, readSampleBigintRangeFilter) {
   // Read sample.parquet with the int filter "a BETWEEN 16 AND 20".
   FilterMap filters;
@@ -1233,6 +1325,31 @@ TEST_F(ParquetReaderTest, readEncryptedParquetWithFilters) {
       "encrypted_sample.parquet", rowType, std::move(filters), expected);
 }
 
+TEST_F(ParquetReaderTest, testEnumType) {
+  // enum_type.parquet contains 1 column (ENUM) with 3 rows.
+  const std::string sample(getExampleFilePath("enum_type.parquet"));
+
+  dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(sample, readerOptions);
+  EXPECT_EQ(reader->numberOfRows(), 3ULL);
+
+  auto rowType = reader->typeWithId();
+  EXPECT_EQ(rowType->type()->kind(), TypeKind::ROW);
+  EXPECT_EQ(rowType->size(), 1ULL);
+
+  EXPECT_EQ(rowType->childAt(0)->type()->kind(), TypeKind::VARCHAR);
+
+  auto fileSchema = ROW({"test"}, {VARCHAR()});
+  auto rowReaderOpts = getReaderOpts(fileSchema);
+  rowReaderOpts.setScanSpec(makeScanSpec(fileSchema));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto expected =
+      makeRowVector({makeFlatVector<StringView>({"FOO", "BAR", "FOO"})});
+
+  assertReadWithReaderAndExpected(fileSchema, *rowReader, expected, *leafPool_);
+}
+
 TEST_F(ParquetReaderTest, readBinaryAsStringFromNation) {
   const std::string filename("nation.parquet");
   const std::string sample(getExampleFilePath(filename));
@@ -1586,6 +1703,34 @@ TEST_F(ParquetReaderTest, readDisputedNoLogicalType) {
   EXPECT_GT(total, 0);
 }
 
+// Verify that when LogicalType is absent but legacy ConvertedType (e.g., UTF8)
+// is present on a BYTE_ARRAY column, the reader annotates ScanSpec with the
+// converted type. This enables VARCHAR pruning to rely on ConvertedType as a
+// fallback.
+TEST_F(ParquetReaderTest, varcharConvertedTypePropagatedWhenLogicalMissing) {
+  // Use column-only fixture extracted from real data; verifies ConvertedType
+  // propagation used by VARCHAR pruning.
+  const std::string sample(
+      getExampleFilePath("varchar_converted_type_fallback_stat_type.parquet"));
+  bytedance::bolt::dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  // Request VARCHAR for the 'stat_type' column.
+  auto rowType = ROW({"stat_type"}, {VARCHAR()});
+  auto rowReaderOpts = getReaderOpts(rowType);
+  auto scanSpec = makeScanSpec(rowType);
+  rowReaderOpts.setScanSpec(scanSpec);
+
+  auto reader = createReader(sample, readerOptions);
+  // Annotation happens during row reader creation.
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+  (void)rowReader;
+
+  auto spec = scanSpec->childByName("stat_type");
+  ASSERT_NE(spec, nullptr);
+  // Converted type should be annotated from schema (UTF8 for textual byte
+  // data).
+  EXPECT_EQ(spec->convertedTypeName(), "UTF8");
+}
+
 TEST_F(ParquetReaderTest, dcMapSimple) {
   // dcmapSimple.parquet stores all the values inside dynamic columns.
   const std::string sample(getExampleFilePath("dcmapSimple.parquet"));
@@ -1613,6 +1758,548 @@ TEST_F(ParquetReaderTest, dcMapSimple) {
   });
 
   assertReadWithReaderAndExpected(rowType, *rowReader, expected, *leafPool_);
+}
+
+TEST_F(ParquetReaderTest, integerToVarcharSchemaMismatchCast) {
+  // Register functions needed by the cast expression evaluator.
+  functions::prestosql::registerAllScalarFunctions();
+
+  // 1. Write a parquet file with an INTEGER column.
+  auto fileSchema = ROW({"col"}, {INTEGER()});
+  auto data =
+      makeRowVector({"col"}, {makeFlatVector<int32_t>({1, 2, 3, 42, -100})});
+
+  auto tempFile = exec::test::TempFilePath::create();
+  {
+    auto writeFile =
+        std::make_unique<LocalWriteFile>(tempFile->getPath(), true, false);
+    auto sink = std::make_unique<dwio::common::WriteFileSink>(
+        std::move(writeFile), tempFile->getPath());
+    bytedance::bolt::parquet::WriterOptions writerOptions;
+    writerOptions.memoryPool = rootPool_.get();
+    auto writer = std::make_unique<bytedance::bolt::parquet::Writer>(
+        std::move(sink), writerOptions, fileSchema);
+    writer->write(data);
+    writer->close();
+  }
+
+  // 2. Read the file back requesting VARCHAR type for the INTEGER column.
+  //    This triggers IntegerColumnReader::makeCastExpr() which needs
+  //    scanSpec->getExpressionEvaluator() to be non-null.
+  auto readSchema = ROW({"col"}, {VARCHAR()});
+
+  dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(tempFile->getPath(), readerOptions);
+
+  // set expressionEvaluator on root FIRST, then add child fields.
+  auto queryCtx = core::QueryCtx::create();
+  exec::SimpleExpressionEvaluator evaluator(queryCtx.get(), leafPool_.get());
+  auto scanSpec = std::make_shared<ScanSpec>("");
+  scanSpec->setExpressionEvaluator(&evaluator);
+  scanSpec->addAllChildFields(*readSchema);
+
+  auto rowReaderOpts = getReaderOpts(readSchema);
+  rowReaderOpts.setScanSpec(scanSpec);
+
+  // IntegerColumnReader's constructor calls makeCastExpr(), which
+  // accesses scanSpec_->getExpressionEvaluator() on a child ScanSpec.
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  // 3. Actually read and verify the cast results.
+  VectorPtr result = BaseVector::create(readSchema, 0, leafPool_.get());
+  auto numRows = rowReader->next(10, result);
+  ASSERT_EQ(numRows, 5);
+
+  auto rowResult = result->as<RowVector>();
+  auto colResult = rowResult->childAt(0)->asFlatVector<StringView>();
+  ASSERT_NE(colResult, nullptr);
+  EXPECT_EQ(colResult->valueAt(0).str(), "1");
+  EXPECT_EQ(colResult->valueAt(1).str(), "2");
+  EXPECT_EQ(colResult->valueAt(2).str(), "3");
+  EXPECT_EQ(colResult->valueAt(3).str(), "42");
+  EXPECT_EQ(colResult->valueAt(4).str(), "-100");
+}
+
+// Same regression test but in the reverse direction: reading a Parquet
+// VARCHAR/STRING column as BIGINT, which triggers
+// StringColumnReader::makeCastExpr().
+TEST_F(ParquetReaderTest, varcharToBigintSchemaMismatchCast) {
+  functions::prestosql::registerAllScalarFunctions();
+
+  // 1. Write a parquet file with a VARCHAR column containing numeric strings.
+  auto fileSchema = ROW({"col"}, {VARCHAR()});
+  auto data = makeRowVector(
+      {"col"}, {makeFlatVector<StringView>({"100", "200", "300", "-42", "0"})});
+
+  auto tempFile = exec::test::TempFilePath::create();
+  {
+    auto writeFile =
+        std::make_unique<LocalWriteFile>(tempFile->getPath(), true, false);
+    auto sink = std::make_unique<dwio::common::WriteFileSink>(
+        std::move(writeFile), tempFile->getPath());
+    bytedance::bolt::parquet::WriterOptions writerOptions;
+    writerOptions.memoryPool = rootPool_.get();
+    auto writer = std::make_unique<bytedance::bolt::parquet::Writer>(
+        std::move(sink), writerOptions, fileSchema);
+    writer->write(data);
+    writer->close();
+  }
+
+  // 2. Read the file back requesting BIGINT type for the VARCHAR column.
+  auto readSchema = ROW({"col"}, {BIGINT()});
+
+  dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(tempFile->getPath(), readerOptions);
+
+  auto queryCtx = core::QueryCtx::create();
+  exec::SimpleExpressionEvaluator evaluator(queryCtx.get(), leafPool_.get());
+  auto scanSpec = std::make_shared<ScanSpec>("");
+  scanSpec->setExpressionEvaluator(&evaluator);
+  scanSpec->addAllChildFields(*readSchema);
+
+  auto rowReaderOpts = getReaderOpts(readSchema);
+  rowReaderOpts.setScanSpec(scanSpec);
+
+  // In non-SPARK builds this is rejected by ParquetColumnReader::matchType.
+#ifndef SPARK_COMPATIBLE
+  EXPECT_THROW(reader->createRowReader(rowReaderOpts), BoltRuntimeError);
+  return;
+#endif
+
+  // In SPARK-compatible builds, schema mismatch is allowed and cast is applied.
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  VectorPtr result = BaseVector::create(readSchema, 0, leafPool_.get());
+  auto numRows = rowReader->next(10, result);
+  ASSERT_EQ(numRows, 5);
+
+  auto rowResult = result->as<RowVector>();
+  auto colVector = rowResult->childAt(0);
+  ASSERT_NE(colVector, nullptr);
+  // The result may be dictionary-encoded after cast, so decode it.
+  DecodedVector decoded(*colVector, SelectivityVector(numRows));
+  for (int i = 0; i < numRows; ++i) {
+    ASSERT_FALSE(decoded.isNullAt(i));
+  }
+  EXPECT_EQ(decoded.valueAt<int64_t>(0), 100);
+  EXPECT_EQ(decoded.valueAt<int64_t>(1), 200);
+  EXPECT_EQ(decoded.valueAt<int64_t>(2), 300);
+  EXPECT_EQ(decoded.valueAt<int64_t>(3), -42);
+  EXPECT_EQ(decoded.valueAt<int64_t>(4), 0);
+}
+
+TEST_F(ParquetReaderTest, readVariantParquet) {
+  const std::string sample(getVariantFixturePath("variant_sample.parquet"));
+
+  bytedance::bolt::dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(sample, readerOptions);
+  EXPECT_EQ(reader->numberOfRows(), 4ULL);
+
+  auto type = reader->typeWithId();
+  EXPECT_EQ(type->size(), 2ULL);
+  auto col0 = type->childAt(0);
+  auto col1 = type->childAt(1);
+  EXPECT_EQ(col0->type()->kind(), TypeKind::INTEGER);
+  EXPECT_EQ(col1->type()->kind(), TypeKind::ROW);
+  EXPECT_EQ(col1->type()->size(), 2);
+  EXPECT_EQ(col1->type()->childAt(0)->kind(), TypeKind::VARBINARY);
+  EXPECT_EQ(col1->type()->childAt(1)->kind(), TypeKind::VARBINARY);
+
+  auto rowType = ROW({"id", "v"}, {INTEGER(), VARIANT()});
+  auto rowReaderOpts = getReaderOpts(rowType);
+  auto scanSpec = std::make_shared<bytedance::bolt::common::ScanSpec>("");
+  scanSpec->addFieldRecursively("id", *rowType->childAt(0), 0);
+  scanSpec->addFieldRecursively("v", *VARIANT(), 1);
+  rowReaderOpts.setScanSpec(scanSpec);
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto result = BaseVector::create(rowType, 4, leafPool_.get());
+  auto rowsRead = rowReader->next(10, result);
+  EXPECT_EQ(rowsRead, 4);
+  EXPECT_EQ(result->size(), 4);
+
+  auto row = result->as<RowVector>();
+  auto ids = row->childAt(0)->asFlatVector<int32_t>();
+  EXPECT_EQ(ids->valueAt(0), 1);
+  EXPECT_EQ(ids->valueAt(1), 2);
+  EXPECT_EQ(ids->valueAt(2), 3);
+  EXPECT_EQ(ids->valueAt(3), 4);
+
+  auto variants = row->childAt(1)->as<VariantVector>();
+  std::vector<std::string> expectedJson = {
+      "{\"a\":1,\"b\":[true,\"x\"],\"c\":{\"d\":3.14}}",
+      "[1,2,3]",
+      "\"hello\"",
+      "null"};
+  auto decodeValue = [&](const VariantValue& value) -> std::string {
+    if (value.value.empty()) {
+      return "null";
+    }
+    if (value.metadata.empty()) {
+      if (simdjson::validate_utf8(value.value.data(), value.value.size())) {
+        return std::string(value.value.data(), value.value.size());
+      }
+      return "null";
+    }
+    auto decoded = bytedance::bolt::functions::sparksql::variant::
+        SparkVariantReader::decode(value.value, value.metadata);
+    return decoded.value_or("null");
+  };
+  simdjson::dom::parser parser;
+  for (int i = 0; i < 3; ++i) {
+    auto value = variants->valueAt(i);
+    EXPECT_FALSE(variants->isNullAt(i));
+    EXPECT_FALSE(value.metadata.empty());
+    EXPECT_EQ(
+        static_cast<uint8_t>(value.metadata.data()[0]),
+        bytedance::bolt::functions::sparksql::variant::VERSION);
+    auto decoded = decodeValue(value);
+    EXPECT_EQ(decoded, expectedJson[i]);
+    simdjson::dom::element doc;
+    EXPECT_EQ(parser.parse(decoded).get(doc), simdjson::SUCCESS);
+  }
+  auto value3 = variants->valueAt(3);
+  auto decoded3 = decodeValue(value3);
+  EXPECT_EQ(decoded3, expectedJson[3]);
+
+  auto variantGet = [&](const VariantValue& value, const StringView& path) {
+    auto out = makeFlatVector<StringView>(1);
+    exec::StringWriter<> writer(out.get(), 0);
+    bytedance::bolt::functions::sparksql::VariantGetFunction<exec::VectorExec>
+        func;
+    auto ok = func.call(writer, value, path);
+    if (ok) {
+      writer.finalize();
+      return std::make_pair(ok, std::string(out->valueAt(0)));
+    }
+    return std::make_pair(ok, std::string());
+  };
+
+  auto [ok0, v0] = variantGet(variants->valueAt(0), "$.c.d");
+  EXPECT_TRUE(ok0);
+  EXPECT_EQ(v0, "3.14");
+  auto [ok1, v1] = variantGet(variants->valueAt(0), "$.b[1]");
+  EXPECT_TRUE(ok1);
+  EXPECT_EQ(v1, "x");
+  auto [ok2, v2] = variantGet(variants->valueAt(1), "$[2]");
+  EXPECT_TRUE(ok2);
+  EXPECT_EQ(v2, "3");
+  auto [ok3, v3] = variantGet(variants->valueAt(2), "$");
+  EXPECT_TRUE(ok3);
+  EXPECT_EQ(v3, "hello");
+  auto [ok4, v4] = variantGet(variants->valueAt(3), "$");
+  // A VARIANT encoding of JSON null correctly decodes to "null".
+  // With the std::optional decode fix, this is no longer confused with
+  // a decode failure.
+  EXPECT_TRUE(ok4);
+  EXPECT_EQ(v4, "null");
+}
+
+TEST_F(ParquetReaderTest, readVariantParquetScanSpecOrderMismatch) {
+  const std::string sample(getVariantFixturePath("variant_sample.parquet"));
+
+  bytedance::bolt::dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(sample, readerOptions);
+
+  auto rowType = ROW({"id", "v"}, {INTEGER(), VARIANT()});
+  auto rowReaderOpts = getReaderOpts(rowType);
+
+  // Intentionally add VARIANT children in reverse order.
+  auto scanSpec = std::make_shared<bytedance::bolt::common::ScanSpec>("");
+  scanSpec->addFieldRecursively("id", *rowType->childAt(0), 0);
+  auto vSpec = scanSpec->addField("v", 1);
+  vSpec->addFieldRecursively(
+      "metadata",
+      *rowType->childAt(1)->childAt(1),
+      bytedance::bolt::common::ScanSpec::kNoChannel);
+  vSpec->addFieldRecursively(
+      "value",
+      *rowType->childAt(1)->childAt(0),
+      bytedance::bolt::common::ScanSpec::kNoChannel);
+  rowReaderOpts.setScanSpec(scanSpec);
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto result = BaseVector::create(rowType, 4, leafPool_.get());
+  auto rowsRead = rowReader->next(10, result);
+  EXPECT_EQ(rowsRead, 4);
+
+  auto row = result->as<RowVector>();
+  auto variants = row->childAt(1)->as<VariantVector>();
+
+  auto variantGet = [&](const VariantValue& value, const StringView& path) {
+    auto out = makeFlatVector<StringView>(1);
+    exec::StringWriter<> writer(out.get(), 0);
+    bytedance::bolt::functions::sparksql::VariantGetFunction<exec::VectorExec>
+        func;
+    auto ok = func.call(writer, value, path);
+    if (ok) {
+      writer.finalize();
+      return std::make_pair(ok, std::string(out->valueAt(0)));
+    }
+    return std::make_pair(ok, std::string());
+  };
+
+  // If the reader fails to correct the ordering mismatch, this lookup is
+  // expected to fail.
+  auto [ok0, v0] = variantGet(variants->valueAt(0), "$.c.d");
+  EXPECT_TRUE(ok0);
+  EXPECT_EQ(v0, "3.14");
+}
+
+TEST_F(ParquetReaderTest, readVariantParquetPrimitivesSpark) {
+  const std::string sample(getVariantFixturePath("variant_primitives.parquet"));
+
+  bytedance::bolt::dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(sample, readerOptions);
+  EXPECT_EQ(reader->numberOfRows(), 12ULL);
+
+  auto rowType = ROW({"id", "v"}, {INTEGER(), VARIANT()});
+  auto rowReaderOpts = getReaderOpts(rowType);
+  rowReaderOpts.setScanSpec(makeScanSpec(rowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto result = BaseVector::create(rowType, 12, leafPool_.get());
+  auto rowsRead = rowReader->next(100, result);
+  EXPECT_EQ(rowsRead, 12);
+
+  auto row = result->as<RowVector>();
+  auto ids = row->childAt(0)->asFlatVector<int32_t>();
+  auto variants = row->childAt(1)->as<VariantVector>();
+
+  auto decodeValue = [&](const VariantValue& value) -> std::string {
+    if (value.value.empty()) {
+      return "null";
+    }
+    auto decoded = bytedance::bolt::functions::sparksql::variant::
+        SparkVariantReader::decode(value.value, value.metadata);
+    return decoded.value_or("null");
+  };
+
+  auto variantGet = [&](const VariantValue& value, const StringView& path) {
+    auto out = makeFlatVector<StringView>(1);
+    exec::StringWriter<> writer(out.get(), 0);
+    bytedance::bolt::functions::sparksql::VariantGetFunction<exec::VectorExec>
+        func;
+    auto ok = func.call(writer, value, path);
+    if (ok) {
+      writer.finalize();
+      return std::make_pair(ok, std::string(out->valueAt(0)));
+    }
+    return std::make_pair(ok, std::string());
+  };
+
+  simdjson::dom::parser parser;
+  for (int i = 0; i < 12; ++i) {
+    EXPECT_EQ(ids->valueAt(i), i + 1);
+    auto decoded = decodeValue(variants->valueAt(i));
+    if (decoded != "null") {
+      simdjson::dom::element doc;
+      EXPECT_EQ(parser.parse(decoded).get(doc), simdjson::SUCCESS);
+    }
+  }
+
+  // Spot-check path extraction across different shapes.
+  auto [okObj, vObj] = variantGet(variants->valueAt(0), "$.c.d");
+  EXPECT_TRUE(okObj);
+  EXPECT_EQ(vObj, "3.14");
+
+  auto [okArr, vArr] = variantGet(variants->valueAt(1), "$[4].k");
+  EXPECT_TRUE(okArr);
+  EXPECT_EQ(vArr, "v");
+
+  auto [okNum, vNum] = variantGet(variants->valueAt(6), "$");
+  EXPECT_TRUE(okNum);
+  EXPECT_EQ(vNum, "2147483648");
+
+  // Validate that Spark metadata dictionary is parseable for non-trivial keys.
+  auto dictForComplexKeys = bytedance::bolt::functions::sparksql::variant::
+      SparkVariantReader::parseDictionary(variants->valueAt(8).metadata);
+  EXPECT_FALSE(dictForComplexKeys.empty());
+  bool hasSpaceKey = false;
+  bool hasQuoteKey = false;
+  for (const auto& k : dictForComplexKeys) {
+    if (k == "space_key") {
+      hasSpaceKey = true;
+    }
+    if (k == "quote_key") {
+      hasQuoteKey = true;
+    }
+  }
+  EXPECT_TRUE(hasSpaceKey);
+  EXPECT_TRUE(hasQuoteKey);
+
+  // Ensure the Spark payload can be decoded.
+  auto decodedComplex = decodeValue(variants->valueAt(8));
+  EXPECT_NE(decodedComplex, "null");
+
+  auto [okSpace, vSpace] = variantGet(variants->valueAt(8), "$.space_key");
+  EXPECT_TRUE(okSpace);
+  EXPECT_EQ(vSpace, "ok");
+
+  auto [okQuote, vQuote] = variantGet(variants->valueAt(8), "$.quote_key");
+  EXPECT_TRUE(okQuote);
+  EXPECT_EQ(vQuote, "2");
+
+  auto [okNull, vNull] = variantGet(variants->valueAt(11), "$");
+  // JSON null is now correctly returned instead of being confused with
+  // a decode failure (fix #5/N6).
+  EXPECT_TRUE(okNull);
+  EXPECT_EQ(vNull, "null");
+}
+
+TEST_F(ParquetReaderTest, readVariantParquetNestedSpark) {
+  const std::string sample(getVariantFixturePath("variant_nested.parquet"));
+
+  bytedance::bolt::dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(sample, readerOptions);
+  EXPECT_EQ(reader->numberOfRows(), 2ULL);
+
+  auto stType = ROW({"v1", "v2"}, {VARIANT(), VARIANT()});
+  auto rowType =
+      ROW({"id", "arr", "m", "st"},
+          {INTEGER(), ARRAY(VARIANT()), MAP(VARCHAR(), VARIANT()), stType});
+  auto rowReaderOpts = getReaderOpts(rowType);
+  rowReaderOpts.setScanSpec(makeScanSpec(rowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto result = BaseVector::create(rowType, 2, leafPool_.get());
+  auto rowsRead = rowReader->next(10, result);
+  EXPECT_EQ(rowsRead, 2);
+
+  auto row = result->as<RowVector>();
+  auto arr = row->childAt(1)->as<ArrayVector>();
+  auto map = row->childAt(2)->as<MapVector>();
+  auto st = row->childAt(3)->as<RowVector>();
+
+  auto variantGet = [&](const VariantValue& value, const StringView& path) {
+    auto out = makeFlatVector<StringView>(1);
+    exec::StringWriter<> writer(out.get(), 0);
+    bytedance::bolt::functions::sparksql::VariantGetFunction<exec::VectorExec>
+        func;
+    auto ok = func.call(writer, value, path);
+    if (ok) {
+      writer.finalize();
+      return std::make_pair(ok, std::string(out->valueAt(0)));
+    }
+    return std::make_pair(ok, std::string());
+  };
+
+  // ARRAY<VARIANT>
+  EXPECT_EQ(arr->sizeAt(0), 3);
+  auto arrElements = arr->elements()->as<VariantVector>();
+  auto offset0 = arr->offsetAt(0);
+  auto [okY, vY] = variantGet(arrElements->valueAt(offset0), "$.y[1]");
+  EXPECT_TRUE(okY);
+  EXPECT_EQ(vY, "2");
+
+  // MAP<VARCHAR, VARIANT>
+  EXPECT_EQ(map->sizeAt(0), 2);
+  auto keyVec = map->mapKeys()->as<SimpleVector<StringView>>();
+  auto valVec = map->mapValues()->as<VariantVector>();
+  auto mapOffset0 = map->offsetAt(0);
+  std::string gotK2;
+  for (int i = 0; i < 2; ++i) {
+    if (keyVec->valueAt(mapOffset0 + i) == StringView("k2")) {
+      auto [ok, v] = variantGet(valVec->valueAt(mapOffset0 + i), "$");
+      EXPECT_TRUE(ok);
+      gotK2 = v;
+    }
+  }
+  EXPECT_EQ(gotK2, "s");
+
+  // STRUCT<VARIANT, VARIANT>
+  auto v1 = st->childAt(0)->as<VariantVector>()->valueAt(0);
+  auto v2 = st->childAt(1)->as<VariantVector>()->valueAt(0);
+  auto [okA, a] = variantGet(v1, "$.a");
+  EXPECT_TRUE(okA);
+  EXPECT_EQ(a, "1");
+  auto [okEmptyArr, emptyArr] = variantGet(v2, "$");
+  EXPECT_TRUE(okEmptyArr);
+  EXPECT_EQ(emptyArr, "[]");
+}
+
+TEST_F(ParquetReaderTest, readVariantParquetRawJsonStruct) {
+  const std::string sample(getVariantFixturePath("variant_rawjson.parquet"));
+
+  bytedance::bolt::dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(sample, readerOptions);
+  EXPECT_EQ(reader->numberOfRows(), 4ULL);
+
+  auto rowType = ROW({"id", "v"}, {INTEGER(), VARIANT()});
+  auto rowReaderOpts = getReaderOpts(rowType);
+  rowReaderOpts.setScanSpec(makeScanSpec(rowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto result = BaseVector::create(rowType, 4, leafPool_.get());
+  auto rowsRead = rowReader->next(10, result);
+  EXPECT_EQ(rowsRead, 4);
+
+  auto row = result->as<RowVector>();
+  auto variants = row->childAt(1)->as<VariantVector>();
+
+  // Raw JSON payloads are expected to have empty metadata.
+  EXPECT_TRUE(variants->valueAt(0).metadata.empty());
+  EXPECT_TRUE(variants->valueAt(1).metadata.empty());
+  EXPECT_TRUE(variants->valueAt(2).metadata.empty());
+  EXPECT_TRUE(variants->valueAt(3).metadata.empty());
+
+  auto variantGet = [&](const VariantValue& value, const StringView& path) {
+    auto out = makeFlatVector<StringView>(1);
+    exec::StringWriter<> writer(out.get(), 0);
+    bytedance::bolt::functions::sparksql::VariantGetFunction<exec::VectorExec>
+        func;
+    auto ok = func.call(writer, value, path);
+    if (ok) {
+      writer.finalize();
+      return std::make_pair(ok, std::string(out->valueAt(0)));
+    }
+    return std::make_pair(ok, std::string());
+  };
+
+  auto [okA, a] = variantGet(variants->valueAt(0), "$.a");
+  EXPECT_TRUE(okA);
+  EXPECT_EQ(a, "1");
+
+  auto [okStr, s] = variantGet(variants->valueAt(2), "$");
+  EXPECT_TRUE(okStr);
+  EXPECT_EQ(s, "hello");
+
+  auto [okNull, vNull] = variantGet(variants->valueAt(3), "$");
+  EXPECT_FALSE(okNull);
+  EXPECT_TRUE(vNull.empty());
+}
+
+TEST_F(ParquetReaderTest, readVariantParquetRawParts) {
+  const std::string sample(getVariantFixturePath("variant_sample.parquet"));
+
+  bytedance::bolt::dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  auto reader = createReader(sample, readerOptions);
+  auto rowType = ROW({"id", "v"}, {INTEGER(), VARIANT()});
+  auto rowReaderOpts = getReaderOpts(rowType);
+  rowReaderOpts.setScanSpec(makeScanSpec(rowType));
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  auto result = BaseVector::create(rowType, 4, leafPool_.get());
+  auto rowsRead = rowReader->next(10, result);
+  EXPECT_EQ(rowsRead, 4);
+  EXPECT_EQ(result->size(), 4);
+
+  auto row = result->as<RowVector>();
+  auto variants = row->childAt(1)->as<VariantVector>();
+
+  for (int i = 0; i < 4; ++i) {
+    if (variants->isNullAt(i)) {
+      continue;
+    }
+    auto value = variants->valueAt(i);
+    EXPECT_GT(value.value.size(), 0);
+    if (!value.metadata.empty()) {
+      auto decoded = bytedance::bolt::functions::sparksql::variant::
+          SparkVariantReader::decode(value.value, value.metadata);
+      EXPECT_TRUE(decoded.has_value());
+      EXPECT_FALSE(decoded->empty());
+    }
+  }
 }
 
 TEST_F(ParquetReaderTest, dcMapNested) {
@@ -1691,3 +2378,321 @@ TEST_F(ParquetReaderTest, dcMapContainsMap) {
 
   assertReadWithReaderAndExpected(rowType, *rowReader, expected, *leafPool_);
 }
+
+// Comprehensive test matrix covering all combinations:
+// - Nulls: No nulls, With nulls
+// - Dictionary: Enabled, Disabled
+// - Filter: None, IsNull, IsNotNull, Value filter
+// - Density: Dense (no deletions), Non-dense (with deletions/mutations)
+
+enum class FloatToDoubleFilter {
+  kNone,
+  kIsNull,
+  kIsNotNull,
+  kGreaterThanOrEqual, // Value filter: greater than or equal to a threshold
+  kMultiRange, // MultiRange filter: a < X OR a > Y
+};
+
+struct FloatToDoubleSpec {
+  std::vector<std::optional<float>> values;
+  std::vector<int64_t> ids;
+  bool enableDictionary{true};
+  FloatToDoubleFilter filter{FloatToDoubleFilter::kNone};
+  std::optional<double> filterValue; // Value for value-based filters
+  std::optional<double> filterLowerValue; // Lower bound for MultiRange filter
+  std::optional<double> filterUpperValue; // Upper bound for MultiRange filter
+  std::vector<vector_size_t> deletedRows;
+};
+
+struct FloatToDoubleTestParam {
+  bool hasNulls;
+  bool enableDictionary;
+  FloatToDoubleFilter filter;
+  bool isDense;
+
+  std::string toString() const {
+    return fmt::format(
+        "Nulls_{}_Dict_{}_Filter_{}_Dense_{}",
+        hasNulls ? "Yes" : "No",
+        enableDictionary ? "Yes" : "No",
+        filterName(filter),
+        isDense ? "Yes" : "No");
+  }
+
+  static std::string filterName(FloatToDoubleFilter filter) {
+    switch (filter) {
+      case FloatToDoubleFilter::kNone:
+        return "None";
+      case FloatToDoubleFilter::kIsNull:
+        return "IsNull";
+      case FloatToDoubleFilter::kIsNotNull:
+        return "IsNotNull";
+      case FloatToDoubleFilter::kGreaterThanOrEqual:
+        return "GreaterThanOrEqual";
+      case FloatToDoubleFilter::kMultiRange:
+        return "MultiRange";
+      default:
+        return "Unknown";
+    }
+  }
+};
+
+class FloatToDoubleEvolutionTest
+    : public ParquetReaderTest,
+      public testing::WithParamInterface<FloatToDoubleTestParam> {
+ public:
+  static std::vector<FloatToDoubleTestParam> getTestParams() {
+    std::vector<FloatToDoubleTestParam> params;
+    for (bool hasNulls : {false, true}) {
+      for (bool enableDictionary : {false, true}) {
+        // When hasNulls is false, only test kNone, kGreaterThanOrEqual, and
+        // kMultiRange filter (kIsNull would match nothing, kIsNotNull is
+        // equivalent to kNone)
+        std::vector<FloatToDoubleFilter> filters;
+        if (hasNulls) {
+          filters = {
+              FloatToDoubleFilter::kNone,
+              FloatToDoubleFilter::kIsNull,
+              FloatToDoubleFilter::kIsNotNull,
+              FloatToDoubleFilter::kGreaterThanOrEqual,
+              FloatToDoubleFilter::kMultiRange};
+        } else {
+          filters = {
+              FloatToDoubleFilter::kNone,
+              FloatToDoubleFilter::kGreaterThanOrEqual,
+              FloatToDoubleFilter::kMultiRange};
+        }
+
+        for (auto filter : filters) {
+          for (bool isDense : {true, false}) {
+            params.push_back({hasNulls, enableDictionary, filter, isDense});
+          }
+        }
+      }
+    }
+    return params;
+  }
+
+  void runFloatToDoubleScenario(const FloatToDoubleSpec& spec);
+};
+
+void FloatToDoubleEvolutionTest::runFloatToDoubleScenario(
+    const FloatToDoubleSpec& spec) {
+  ASSERT_EQ(spec.values.size(), spec.ids.size());
+  const vector_size_t numRows = spec.ids.size();
+
+  auto floatVector = makeNullableFlatVector<float>(spec.values);
+  auto idVector =
+      makeFlatVector<int64_t>(numRows, [&](auto row) { return spec.ids[row]; });
+
+  RowVectorPtr writeData = makeRowVector({floatVector, idVector});
+  RowTypePtr writeSchema = ROW({"float_col", "id"}, {REAL(), BIGINT()});
+
+  auto sink = std::make_unique<MemorySink>(
+      1024 * 1024, dwio::common::FileSink::Options{.pool = leafPool_.get()});
+  auto sinkPtr = sink.get();
+
+  bytedance::bolt::parquet::WriterOptions writerOptions;
+  writerOptions.memoryPool = rootPool_.get();
+  writerOptions.enableDictionary = spec.enableDictionary;
+
+  auto writer = std::make_unique<bytedance::bolt::parquet::Writer>(
+      std::move(sink), writerOptions, writeSchema);
+  writer->write(writeData);
+  writer->close();
+
+  RowTypePtr readSchema = ROW({"float_col", "id"}, {DOUBLE(), BIGINT()});
+
+  dwio::common::ReaderOptions readerOptions{leafPool_.get()};
+  readerOptions.setFileSchema(readSchema);
+
+  std::string dataBuf(sinkPtr->data(), sinkPtr->size());
+  auto file = std::make_shared<InMemoryReadFile>(std::move(dataBuf));
+  auto buffer = std::make_unique<dwio::common::BufferedInput>(file, *leafPool_);
+  auto reader =
+      std::make_unique<ParquetReader>(std::move(buffer), readerOptions);
+
+  RowReaderOptions rowReaderOpts;
+  rowReaderOpts.select(
+      std::make_shared<bytedance::bolt::dwio::common::ColumnSelector>(
+          readSchema, readSchema->names()));
+  auto scanSpec = makeScanSpec(readSchema);
+
+  // Apply IsNull or IsNotNull filter if specified
+  switch (spec.filter) {
+    case FloatToDoubleFilter::kNone:
+      break;
+    case FloatToDoubleFilter::kIsNull: {
+      auto* floatChild =
+          scanSpec->getOrCreateChild(common::Subfield("float_col"));
+      floatChild->setFilter(exec::isNull());
+      break;
+    }
+    case FloatToDoubleFilter::kIsNotNull: {
+      auto* floatChild =
+          scanSpec->getOrCreateChild(common::Subfield("float_col"));
+      floatChild->setFilter(exec::isNotNull());
+      break;
+    }
+    case FloatToDoubleFilter::kGreaterThanOrEqual: {
+      ASSERT_TRUE(spec.filterValue.has_value());
+      auto* floatChild =
+          scanSpec->getOrCreateChild(common::Subfield("float_col"));
+      floatChild->setFilter(
+          exec::greaterThanOrEqualDouble(spec.filterValue.value()));
+      break;
+    }
+    case FloatToDoubleFilter::kMultiRange: {
+      ASSERT_TRUE(spec.filterLowerValue.has_value());
+      ASSERT_TRUE(spec.filterUpperValue.has_value());
+      auto* floatChild =
+          scanSpec->getOrCreateChild(common::Subfield("float_col"));
+      // Create a MultiRange filter: a < lower OR a > upper
+      floatChild->setFilter(exec::orFilter(
+          exec::lessThanDouble(spec.filterLowerValue.value()),
+          exec::greaterThanDouble(spec.filterUpperValue.value())));
+      break;
+    }
+  }
+
+  rowReaderOpts.setScanSpec(scanSpec);
+  auto rowReader = reader->createRowReader(rowReaderOpts);
+
+  std::vector<bool> deletedFlags(numRows, false);
+  for (auto index : spec.deletedRows) {
+    ASSERT_LT(index, numRows);
+    deletedFlags[index] = true;
+  }
+
+  std::vector<vector_size_t> expectedIndices;
+  expectedIndices.reserve(numRows);
+  for (vector_size_t row = 0; row < numRows; ++row) {
+    if (deletedFlags[row]) {
+      continue;
+    }
+
+    bool passes = false;
+    switch (spec.filter) {
+      case FloatToDoubleFilter::kNone:
+        passes = true;
+        break;
+      case FloatToDoubleFilter::kIsNull:
+        passes = !spec.values[row].has_value();
+        break;
+      case FloatToDoubleFilter::kIsNotNull:
+        passes = spec.values[row].has_value();
+        break;
+      case FloatToDoubleFilter::kGreaterThanOrEqual:
+        passes = spec.values[row].has_value() &&
+            static_cast<double>(*spec.values[row]) >= spec.filterValue.value();
+        break;
+      case FloatToDoubleFilter::kMultiRange:
+        passes = spec.values[row].has_value() &&
+            (static_cast<double>(*spec.values[row]) <
+                 spec.filterLowerValue.value() ||
+             static_cast<double>(*spec.values[row]) >
+                 spec.filterUpperValue.value());
+        break;
+    }
+
+    if (passes) {
+      expectedIndices.push_back(row);
+    }
+  }
+
+  std::vector<std::optional<double>> expectedDoubles(expectedIndices.size());
+  for (size_t i = 0; i < expectedIndices.size(); ++i) {
+    const auto originalIndex = expectedIndices[i];
+    if (!spec.values[originalIndex].has_value()) {
+      expectedDoubles[i] = std::nullopt;
+    } else {
+      expectedDoubles[i] = static_cast<double>(*spec.values[originalIndex]);
+    }
+  }
+
+  auto expectedFloat = makeNullableFlatVector<double>(expectedDoubles);
+  auto expectedId = makeFlatVector<int64_t>(
+      expectedIndices.size(),
+      [&](auto row) { return spec.ids[expectedIndices[row]]; });
+  RowVectorPtr expected = makeRowVector({expectedFloat, expectedId});
+
+  if (spec.deletedRows.empty() && spec.filter != FloatToDoubleFilter::kIsNull &&
+      spec.filter != FloatToDoubleFilter::kIsNotNull &&
+      spec.filter != FloatToDoubleFilter::kGreaterThanOrEqual &&
+      spec.filter != FloatToDoubleFilter::kMultiRange) {
+    assertReadWithReaderAndExpected(
+        readSchema, *rowReader, expected, *leafPool_);
+    return;
+  }
+
+  VectorPtr result = BaseVector::create(readSchema, 0, leafPool_.get());
+  vector_size_t scanned = 0;
+  std::vector<uint64_t> deleted(bits::nwords(numRows), 0);
+  if (spec.deletedRows.empty()) {
+    scanned = rowReader->next(numRows, result);
+  } else {
+    for (auto index : spec.deletedRows) {
+      bits::setBit(deleted.data(), index);
+    }
+    dwio::common::Mutation mutation;
+    mutation.deletedRows = deleted.data();
+    scanned = rowReader->next(numRows, result, &mutation);
+  }
+
+  EXPECT_GT(scanned, 0);
+  EXPECT_GE(scanned, expected->size());
+  ASSERT_TRUE(result != nullptr);
+  auto rowVector = result->as<RowVector>();
+  ASSERT_TRUE(rowVector != nullptr);
+  ASSERT_EQ(rowVector->size(), expected->size());
+  assertEqualVectorPart(expected, result, 0);
+}
+
+TEST_P(FloatToDoubleEvolutionTest, readFloatToDouble) {
+  const auto& param = GetParam();
+  FloatToDoubleSpec spec;
+  constexpr vector_size_t kSize = 200;
+  spec.enableDictionary = param.enableDictionary;
+  spec.values.resize(kSize);
+  spec.ids.resize(kSize);
+
+  for (vector_size_t row = 0; row < kSize; ++row) {
+    if (param.hasNulls && row % 5 == 0) {
+      spec.values[row] = std::nullopt;
+    } else {
+      // Use a value pattern that works for both dictionary and direct encoding
+      float val =
+          static_cast<float>(row % 10) * 1.1f + static_cast<float>(row) * 0.01f;
+      spec.values[row] = val;
+    }
+    spec.ids[row] = row;
+  }
+
+  spec.filter = param.filter;
+
+  // Set filter value for value-based filters
+  if (param.filter == FloatToDoubleFilter::kGreaterThanOrEqual) {
+    // Filter values greater than or equal to 5.0 (this should match
+    // approximately half the rows)
+    spec.filterValue = 5.0;
+  } else if (param.filter == FloatToDoubleFilter::kMultiRange) {
+    // Filter values < 3.0 OR > 7.0
+    spec.filterLowerValue = 3.0;
+    spec.filterUpperValue = 7.0;
+  }
+
+  if (!param.isDense) {
+    // Add some deleted rows scattered throughout
+    spec.deletedRows = {5, 20, 55, 99, 150, 199};
+  }
+
+  runFloatToDoubleScenario(spec);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FloatToDoubleEvolution,
+    FloatToDoubleEvolutionTest,
+    testing::ValuesIn(FloatToDoubleEvolutionTest::getTestParams()),
+    [](const testing::TestParamInfo<FloatToDoubleTestParam>& info) {
+      return info.param.toString();
+    });

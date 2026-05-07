@@ -31,9 +31,12 @@ SparkShuffleReader::SparkShuffleReader(
       shuffleReaderOptions_(shuffleReaderNode->getShuffleReaderOptions()),
       readerStreamIterator_(shuffleReaderNode->getReaderStreams()),
       arrowPool_(std::make_shared<BoltArrowMemoryPool>(pool())),
-      codec_(createArrowIpcCodec(
+      codec_(createCodec(
           shuffleReaderOptions_.compressionType,
-          getCodecBackend(shuffleReaderOptions_.codecBackend))),
+          CodecOptions{
+              getCodecBackend(shuffleReaderOptions_.codecBackend),
+              kDefaultCompressionLevel,
+              shuffleReaderOptions_.checksumEnabled})),
       batchSize_(shuffleReaderOptions_.batchSize),
       shuffleBatchByteSize_(shuffleReaderOptions_.shuffleBatchByteSize),
       numPartitions_(shuffleReaderOptions_.numPartitions),
@@ -71,10 +74,9 @@ SparkShuffleReader::SparkShuffleReader(
     }
   }
 
-  // must be same as BoltRuntime::decideBoltShuffleWriterType
-  isRowBased_ = (!partitioningShortName_.compare("hash") ||
-                 !partitioningShortName_.compare("rr") ||
-                 !partitioningShortName_.compare("range")) &&
+  // must be same as BoltShuffleWriter::decideBoltShuffleWriterType
+  auto partitioning = toPartitioning(partitioningShortName_);
+  isRowBased_ = supportAdaptiveShuffleWriter(partitioning) &&
       ((shuffleWriterType_ == ShuffleWriterType::Adaptive &&
         numPartitions_ >= rowBasePartitionThreshold &&
         outputType_->size() >= rowBaseColumnNumThreshold) ||
@@ -85,7 +87,7 @@ void SparkShuffleReader::init() {
   // Bolt operator should not alloc memory during construct, so init schema and
   // codec here
   schema_ = boltTypeToArrowSchema(outputType_, pool());
-  zstdCodec_ = std::make_shared<ZstdStreamCodec>(
+  zstdCodec_ = std::make_shared<AdaptiveParallelZstdCodec>(
       1 /*not used*/, false, arrowPool_.get());
 }
 

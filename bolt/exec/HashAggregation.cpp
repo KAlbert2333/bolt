@@ -596,9 +596,9 @@ RowVectorPtr HashAggregation::getOutput() {
     // Handle accumulated output when no more input or memory pressure
     if (accumulatedOutput_ &&
         (finished_ || partialFull_ ||
-         accumulatedOutput_->size() >= minOutputRows_)) {
+         accumulatedOutput_->size() >= minOutputRows_ ||
+         abandonedPartialAggregation_)) {
       auto result = std::move(accumulatedOutput_);
-      accumulatedOutput_ = nullptr;
       resetPartialOutputIfNeed();
       return result;
     }
@@ -730,6 +730,9 @@ void HashAggregation::noMoreInput() {
 }
 
 bool HashAggregation::isFinished() {
+  if (finished_) {
+    BOLT_CHECK_NULL(accumulatedOutput_);
+  }
   return finished_;
 }
 

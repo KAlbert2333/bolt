@@ -435,6 +435,7 @@ class AggregationTest : public OperatorTestBase,
         false,
         true,
         true,
+        false,
         pool_.get());
   }
 
@@ -652,6 +653,61 @@ TEST_P(AggregationTest, global) {
       "SELECT sum(15), sum(c1), sum(c2), sum(c4), sum(c5), "
       "min(15), min(c1), min(c2), min(c3), min(c4), min(c5), "
       "max(15), max(c1), max(c2), max(c3), max(c4), max(c5), sum(1) FROM tmp");
+
+  EXPECT_EQ(NonPODInt64::constructed, NonPODInt64::destructed);
+}
+
+TEST_F(AggregationTest, manyGlobalAggregations) {
+  // Test a query with a large number of global aggregations.
+  // Global aggregations have a separate code path that does not use a
+  // HashTable, but rather a single row outside of a RowContainer.  Having many
+  // aggregations can expose issues with that single row that may not occur with
+  // only a few aggregations.
+  auto rowType =
+      bolt::test::VectorMaker::rowType(std::vector<TypePtr>(100, SMALLINT()));
+  auto vectors = makeVectors(rowType, 10, 100);
+  createDuckDbTable(vectors);
+
+  std::vector<std::string> aggregates;
+  for (int i = 0; i < rowType->size(); i++) {
+    aggregates.push_back(fmt::format("sum({})", rowType->nameOf(i)));
+  }
+
+  auto op = PlanBuilder()
+                .values(vectors)
+                .singleAggregation({}, aggregates)
+                .planNode();
+
+  assertQuery(op, "SELECT " + folly::join(", ", aggregates) + " FROM tmp");
+
+  aggregates.clear();
+  for (int i = 0; i < rowType->size(); i++) {
+    aggregates.push_back(fmt::format("sum(distinct {})", rowType->nameOf(i)));
+  }
+
+  op = PlanBuilder()
+           .values(vectors)
+           .singleAggregation({}, aggregates)
+           .planNode();
+
+  assertQuery(op, "SELECT " + folly::join(", ", aggregates) + " FROM tmp");
+
+  rowType =
+      bolt::test::VectorMaker::rowType(std::vector<TypePtr>(32, SMALLINT()));
+  vectors = makeVectors(rowType, 10, 32);
+  createDuckDbTable(vectors);
+  aggregates.clear();
+  for (int i = 0; i < rowType->size(); i++) {
+    aggregates.push_back(fmt::format(
+        "array_agg({} ORDER BY {})", rowType->nameOf(i), rowType->nameOf(i)));
+  }
+
+  op = PlanBuilder()
+           .values(vectors)
+           .singleAggregation({}, aggregates)
+           .planNode();
+
+  assertQuery(op, "SELECT " + folly::join(", ", aggregates) + " FROM tmp");
 
   EXPECT_EQ(NonPODInt64::constructed, NonPODInt64::destructed);
 }
@@ -993,6 +1049,45 @@ TEST_P(AggregationTest, partialDistinctWithAbandon) {
                        .finalAggregation(GetParam().useGPU)
                        .planNode())
              .assertResults("SELECT distinct c0, sum(c0) FROM tmp group by c0");
+}
+
+TEST_P(AggregationTest, partialDistinctFlushesAccumulatedOutputOnAbandon) {
+  if (GetParam().useGPU) {
+    GTEST_SKIP()
+        << "GPU Aggregation does not support partial aggregation stats\n";
+  }
+  auto vectors = {
+      // 1st batch produces 100 distinct rows which stay buffered in
+      // accumulatedOutput_ because min_output_batch_rows is larger.
+      makeRowVector(
+          {makeFlatVector<int32_t>(100, [](auto row) { return row; })}),
+      // 2nd batch adds one new distinct row and triggers abandon partial
+      // aggregation in the same getOutput() call. Without flushing
+      // accumulatedOutput_, these 101 distinct rows are lost before reaching
+      // the final aggregation.
+      makeRowVector(
+          {makeFlatVector<int32_t>(1, [](auto /*row*/) { return 100; })}),
+  };
+  createDuckDbTable(vectors);
+  CursorParameters params;
+  params.maxDrivers = 1;
+  params.queryCtx = core::QueryCtx::create(executor_.get());
+  params.queryCtx->testingOverrideConfigUnsafe({
+      {QueryConfig::kMinOutputBatchRows, "128"},
+      {QueryConfig::kAbandonPartialAggregationMinRows, "100"},
+      {QueryConfig::kAbandonPartialAggregationMinPct, "50"},
+  });
+  params.planNode = PlanBuilder()
+                        .values(vectors)
+                        .partialAggregation({"c0"}, {}, {}, GetParam().useGPU)
+                        .finalAggregation(GetParam().useGPU)
+                        .planNode();
+  auto result = readCursor(params, [](Task*) {});
+  int64_t numRows = 0;
+  for (const auto& vector : result.second) {
+    numRows += vector->size();
+  }
+  ASSERT_EQ(101, numRows);
 }
 
 TEST_P(AggregationTest, toIntermediate) {
@@ -2943,7 +3038,7 @@ DEBUG_ONLY_TEST_P(AggregationTest, reclaimDuringInputProcessing) {
     auto testWaitKey = testWait.prepareWait();
 
     std::atomic_int numInputs{0};
-    Operator* op;
+    Operator* op = nullptr;
     SCOPED_TESTVALUE_SET(
         "bytedance::bolt::exec::Driver::runInternal::addInput",
         std::function<void(Operator*)>(([&](Operator* testOp) {
@@ -3087,7 +3182,7 @@ DEBUG_ONLY_TEST_P(AggregationTest, reclaimDuringReserve) {
   folly::EventCount testWait;
   auto testWaitKey = testWait.prepareWait();
 
-  Operator* op;
+  Operator* op = nullptr;
   SCOPED_TESTVALUE_SET(
       "bytedance::bolt::exec::Driver::runInternal::addInput",
       std::function<void(Operator*)>(([&](Operator* testOp) {
@@ -3201,7 +3296,7 @@ DEBUG_ONLY_TEST_P(AggregationTest, reclaimDuringAllocation) {
     folly::EventCount testWait;
     auto testWaitKey = testWait.prepareWait();
 
-    Operator* op;
+    Operator* op = nullptr;
     SCOPED_TESTVALUE_SET(
         "bytedance::bolt::exec::Driver::runInternal::addInput",
         std::function<void(Operator*)>(([&](Operator* testOp) {
@@ -3644,7 +3739,7 @@ DEBUG_ONLY_TEST_P(AggregationTest, reclaimWithEmptyAggregationTable) {
             .planNode();
 
     std::atomic_bool injectOnce{true};
-    Operator* op;
+    Operator* op = nullptr;
     SCOPED_TESTVALUE_SET(
         "bytedance::bolt::exec::Driver::runInternal",
         std::function<void(Driver*)>(([&](Driver* driver) {
@@ -3774,7 +3869,7 @@ DEBUG_ONLY_TEST_P(AggregationTest, abortDuringOutputProcessing) {
     auto testWaitKey = testWait.prepareWait();
 
     std::atomic_bool injectOnce{true};
-    Operator* op;
+    Operator* op = nullptr;
     SCOPED_TESTVALUE_SET(
         "bytedance::bolt::exec::Driver::runInternal::noMoreInput",
         std::function<void(Operator*)>(([&](Operator* testOp) {
@@ -3866,7 +3961,7 @@ DEBUG_ONLY_TEST_P(AggregationTest, abortDuringInputgProcessing) {
     auto testWaitKey = testWait.prepareWait();
 
     std::atomic_int numInputs{0};
-    Operator* op;
+    Operator* op = nullptr;
     SCOPED_TESTVALUE_SET(
         "bytedance::bolt::exec::Driver::runInternal::addInput",
         std::function<void(Operator*)>(([&](Operator* testOp) {

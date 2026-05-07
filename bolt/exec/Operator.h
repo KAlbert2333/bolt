@@ -114,7 +114,8 @@ class OperatorCtx {
       const std::string& planNodeId,
       memory::MemoryPool* connectorPool,
       const common::SpillConfig* spillConfig = nullptr,
-      connector::AsyncThreadCtx* const asyncThreadCtx = nullptr) const;
+      std::shared_ptr<connector::AsyncThreadCtx> asyncThreadCtx =
+          nullptr) const;
 
   /// get totalRowCount and processedRowCount
   void traverseOpToGetRowCount(
@@ -608,7 +609,7 @@ class Operator : public BaseRuntimeStatWriter {
   /// must not be negative. If the averageRowSize is 0 which is not advised,
   /// returns maxOutputBatchRows. If the averageRowSize is not given, returns
   /// preferredOutputBatchRows.
-  uint32_t outputBatchRows(
+  vector_size_t outputBatchRows(
       std::optional<uint64_t> averageRowSize = std::nullopt) const;
 
   // Return the number of rows for the output batch by considering the output
@@ -706,13 +707,15 @@ class SourceOperator : public Operator {
       RowTypePtr outputType,
       int32_t operatorId,
       const std::string& planNodeId,
-      const std::string& operatorType)
+      const std::string& operatorType,
+      const std::optional<common::SpillConfig>& spillConfig = std::nullopt)
       : Operator(
             driverCtx,
             std::move(outputType),
             operatorId,
             planNodeId,
-            operatorType) {}
+            operatorType,
+            spillConfig) {}
 
   bool needsInput() const override {
     return false;

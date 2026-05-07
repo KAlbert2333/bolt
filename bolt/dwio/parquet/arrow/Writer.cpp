@@ -331,6 +331,9 @@ class FileWriterImpl : public FileWriter {
         row_group_writer_(nullptr),
         column_write_context_(pool, arrow_properties.get()),
         arrow_properties_(std::move(arrow_properties)),
+        io_context_(std::make_unique<::arrow::io::IOContext>(
+            column_write_context_.memory_pool)),
+        arrow_reader_properties_(std::make_unique<ArrowReaderProperties>()),
         closed_(false) {
     if (arrow_properties_->use_threads()) {
       parallel_column_write_contexts_.reserve(schema_->num_fields());
@@ -342,13 +345,14 @@ class FileWriterImpl : public FileWriter {
             pool, arrow_properties_.get());
       }
     }
+    arrow_reader_properties_->set_io_context(*io_context_);
   }
 
   Status Init() {
     return SchemaManifest::Make(
         writer_->schema(),
         /*schema_metadata=*/nullptr,
-        default_arrow_reader_properties(),
+        *arrow_reader_properties_,
         &schema_manifest_);
   }
 
@@ -457,6 +461,15 @@ class FileWriterImpl : public FileWriter {
     return Status::OK();
   }
 
+  Status Flush() override {
+    if (row_group_writer_ != nullptr) {
+      auto row_group_writer = row_group_writer_;
+      row_group_writer_ = nullptr;
+      PARQUET_CATCH_NOT_OK(row_group_writer->Close());
+    }
+    return Status::OK();
+  }
+
   Status WriteRecordBatch(const RecordBatch& batch) override {
     if (batch.num_rows() == 0) {
       return Status::OK();
@@ -472,6 +485,9 @@ class FileWriterImpl : public FileWriter {
     }
 
     auto WriteBatch = [&](int64_t offset, int64_t size) {
+      if (size <= 0) {
+        return Status::OK();
+      }
       std::vector<std::unique_ptr<ArrowColumnWriterV2>> writers;
       int column_index_start = 0;
 
@@ -516,8 +532,7 @@ class FileWriterImpl : public FileWriter {
       if (numRowsWritten <= 0) {
         return false;
       }
-      // Whether the number of rows will exceed the threshold
-      if (numRowsWritten + numRows > max_row_group_length) {
+      if (numRowsWritten >= max_row_group_length) {
         return true;
       }
       // Parquet_block_size is not set.
@@ -587,6 +602,8 @@ class FileWriterImpl : public FileWriter {
   RowGroupWriter* row_group_writer_;
   ArrowWriteContext column_write_context_;
   std::shared_ptr<ArrowWriterProperties> arrow_properties_;
+  std::unique_ptr<::arrow::io::IOContext> io_context_;
+  std::unique_ptr<ArrowReaderProperties> arrow_reader_properties_;
   bool closed_;
 
   /// If arrow_properties_.use_threads() is true, the vector size is equal to

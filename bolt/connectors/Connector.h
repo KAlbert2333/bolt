@@ -93,11 +93,18 @@ struct ConnectorSplit : public ISerializable {
   virtual std::string toString() const {
     return fmt::format("[split: {}]", connectorId);
   }
+
+  /// Returns the size of this split in bytes, or 0 if unknown.
+  virtual int64_t splitSizeBytes() const {
+    return 0;
+  }
 };
 
 class ColumnHandle : public ISerializable {
  public:
   virtual ~ColumnHandle() = default;
+
+  virtual const std::string& name() const = 0;
 
   folly::dynamic serialize() const override;
 
@@ -125,9 +132,7 @@ class ConnectorTableHandle : public ISerializable {
   /// Returns the connector-dependent table name. Used with
   /// ConnectorMetadata. Implementations need to supply a definition
   /// to work with metadata.
-  virtual const std::string& name() const {
-    BOLT_UNSUPPORTED();
-  }
+  virtual const std::string& name() const = 0;
 
   /// Returns true if the connector table handle supports index lookup.
   virtual bool supportsIndexLookup() const {
@@ -161,6 +166,33 @@ class ConnectorInsertTableHandle : public ISerializable {
   folly::dynamic serialize() const override {
     BOLT_NYI();
   }
+};
+
+class ConnectorLocationHandle : public ISerializable {
+ public:
+  enum class TableType { kNew, kExisting, kTemp };
+
+  ConnectorLocationHandle(std::string connectorId, TableType tableType)
+      : connectorId_{std::move(connectorId)}, tableType_{tableType} {}
+
+  ~ConnectorLocationHandle() override;
+
+  const std::string& connectorId() const {
+    return connectorId_;
+  }
+
+  /// New vs existing vs temp.
+  TableType tableType() const {
+    return tableType_;
+  }
+
+  virtual std::string toString() const = 0;
+
+  folly::dynamic serialize() const override = 0;
+
+ private:
+  const std::string connectorId_;
+  const TableType tableType_;
 };
 
 /// Represents the commit strategy for writing to connector.
@@ -377,20 +409,35 @@ class AsyncThreadCtx {
     BOLT_CHECK_GT(preloadBytesLimit_, 0);
   }
 
-  void in() {
+  enum class State { kActive, kClosed };
+
+  bool isClosed() const {
     std::scoped_lock lock(mutex_);
-    numIn_++;
-    cv_.notify_one();
+    return state_ == State::kClosed;
   }
-  void out() {
+
+  bool in(int64_t bytes) {
+    std::scoped_lock lock(mutex_);
+    if (state_ == State::kClosed) {
+      return false;
+    }
+    numIn_++;
+    BOLT_CHECK_GE(bytes, 0);
+    addPreloadingBytes(bytes);
+    cv_.notify_one();
+    return true;
+  }
+  void out(int64_t bytes) {
     std::scoped_lock lock(mutex_);
     numIn_--;
+    addPreloadingBytes(bytes > 0 ? -bytes : bytes);
     cv_.notify_one();
   }
 
   void wait() {
     // check timeout and output warninglogs
     std::unique_lock lock(mutex_);
+    state_ = State::kClosed;
     cv_.wait_until(
         lock,
         std::chrono::steady_clock::now() + std::chrono::seconds(600),
@@ -406,21 +453,11 @@ class AsyncThreadCtx {
   }
 
   void addPreloadingBytes(int64_t bytes) {
-    std::scoped_lock lock(mutex_);
-    addPreloadingBytesUntracked(bytes);
+    inPreloadingBytes_ += bytes;
   }
 
   int64_t inPreloadingBytes() const {
-    std::scoped_lock lock(mutex_);
-    return inPreloadingBytesUntracked();
-  }
-
-  int64_t inPreloadingBytesUntracked() const {
     return inPreloadingBytes_;
-  }
-
-  void addPreloadingBytesUntracked(int64_t bytes) {
-    inPreloadingBytes_ += bytes;
   }
 
   void disallowPreload() {
@@ -440,17 +477,18 @@ class AsyncThreadCtx {
 
   class Guard {
    public:
-    Guard(AsyncThreadCtx* ctx, int64_t bytes = 0) : ctx_(ctx), bytes_(bytes) {
+    explicit Guard(AsyncThreadCtx* ctx, int64_t bytes = 0)
+        : ctx_(ctx), bytes_(bytes) {
       if (ctx_) {
-        ctx_->in();
-        ctx_->addPreloadingBytes(bytes_);
+        if (!ctx_->in(bytes_)) {
+          ctx_ = nullptr;
+        }
       }
     }
 
     ~Guard() {
       if (ctx_) {
-        ctx_->out();
-        ctx_->addPreloadingBytes(-bytes_);
+        ctx_->out(-bytes_);
       }
     }
 
@@ -461,17 +499,17 @@ class AsyncThreadCtx {
       other.ctx_ = nullptr;
     }
 
-    Guard& operator=(Guard&& other) noexcept {
-      if (this != &other) {
-        if (ctx_) {
-          ctx_->out();
-          ctx_->addPreloadingBytes(-bytes_);
-        }
-        ctx_ = other.ctx_;
-        bytes_ = other.bytes_;
-        other.ctx_ = nullptr;
+    Guard& operator=(Guard&& other) = delete;
+
+    void updateInPreloadingBytesUnlocked(int64_t bytes) {
+      if (ctx_) {
+        bytes_ += bytes;
+        ctx_->addPreloadingBytes(bytes);
       }
-      return *this;
+    }
+
+    explicit operator bool() const {
+      return ctx_ != nullptr;
     }
 
    private:
@@ -487,6 +525,7 @@ class AsyncThreadCtx {
   std::condition_variable cv_;
   std::atomic_bool allowPreload_{true};
   bool adaptive_{true};
+  State state_{State::kActive};
 };
 
 /// Collection of context data for use in a DataSource, IndexSource or DataSink.
@@ -500,7 +539,7 @@ class ConnectorQueryCtx {
       memory::MemoryPool* connectorPool,
       const config::ConfigBase* sessionProperties,
       const common::SpillConfig* spillConfig,
-      connector::AsyncThreadCtx* const asyncThreadCtx,
+      std::shared_ptr<connector::AsyncThreadCtx> asyncThreadCtx,
       std::unique_ptr<core::ExpressionEvaluator> expressionEvaluator,
       cache::AsyncDataCache* cache,
       const std::string& queryId,
@@ -511,7 +550,7 @@ class ConnectorQueryCtx {
         connectorPool_(connectorPool),
         sessionProperties_(sessionProperties),
         spillConfig_(spillConfig),
-        asyncThreadCtx_(asyncThreadCtx),
+        asyncThreadCtx_(std::move(asyncThreadCtx)),
         expressionEvaluator_(std::move(expressionEvaluator)),
         cache_(cache),
         scanId_(fmt::format("{}.{}", taskId, planNodeId)),
@@ -575,7 +614,7 @@ class ConnectorQueryCtx {
     return planNodeId_;
   }
 
-  AsyncThreadCtx* asyncThreadCtx() const {
+  std::shared_ptr<AsyncThreadCtx> asyncThreadCtx() const {
     return asyncThreadCtx_;
   }
 
@@ -584,7 +623,7 @@ class ConnectorQueryCtx {
   memory::MemoryPool* const connectorPool_;
   const config::ConfigBase* const sessionProperties_;
   const common::SpillConfig* const spillConfig_;
-  AsyncThreadCtx* const asyncThreadCtx_;
+  const std::shared_ptr<AsyncThreadCtx> asyncThreadCtx_;
   std::unique_ptr<core::ExpressionEvaluator> expressionEvaluator_;
   cache::AsyncDataCache* cache_;
   const std::string scanId_;
@@ -726,6 +765,12 @@ class ConnectorFactory {
   // Initialize is called during the factory registration.
   virtual void initialize() {}
 
+  /// Create and register the ConnectorObjectFactory for this connector type.
+  /// The default implementation is a no-op; connectors that support an object
+  /// factory should override this.
+  virtual void registerObjectFactory(const std::string& /*connectorId*/) const {
+  }
+
   const std::string& connectorName() const {
     return name_;
   }
@@ -787,7 +832,8 @@ getAllConnectors();
 
 #define BOLT_REGISTER_CONNECTOR_FACTORY(theFactory)                       \
   namespace {                                                             \
-  static bool FB_ANONYMOUS_VARIABLE(g_ConnectorFactory) =                 \
+  __attribute__((used)) static bool FB_ANONYMOUS_VARIABLE(                \
+      g_ConnectorFactory) =                                               \
       bytedance::bolt::connector::registerConnectorFactory((theFactory)); \
   }
 } // namespace bytedance::bolt::connector

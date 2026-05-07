@@ -117,6 +117,11 @@ class ReaderBase {
     return logicalTypesByPath_;
   }
 
+  const std::unordered_map<std::string, thrift::ConvertedType::type>&
+  schemaConvertedTypes() const {
+    return convertedTypesByPath_;
+  }
+
   bool isFileColumnNamesReadAsLowerCase() const {
     return options_.isFileColumnNamesReadAsLowerCase();
   }
@@ -195,6 +200,9 @@ class ReaderBase {
   // Logical types keyed by dot-delimited field path from the root.
   std::unordered_map<std::string, thrift::LogicalType> logicalTypesByPath_;
 
+  std::unordered_map<std::string, thrift::ConvertedType::type>
+      convertedTypesByPath_;
+
   // Map from row group index to pre-created loading BufferedInput.
   std::unordered_map<uint32_t, std::shared_ptr<dwio::common::BufferedInput>>
       inputs_;
@@ -206,6 +214,10 @@ class ReaderBase {
   std::shared_ptr<InternalFileDecryptor> fileDecryptor_;
 
   void collectLogicalTypes(
+      const std::shared_ptr<const dwio::common::TypeWithId>& type,
+      const std::string& path);
+
+  void collectConvertedTypes(
       const std::shared_ptr<const dwio::common::TypeWithId>& type,
       const std::string& path);
 };
@@ -378,7 +390,9 @@ void ReaderBase::initializeSchema() {
       schemaWithId_->getChildren(), isFileColumnNamesReadAsLowerCase());
 
   logicalTypesByPath_.clear();
+  convertedTypesByPath_.clear();
   collectLogicalTypes(schemaWithId_, "");
+  collectConvertedTypes(schemaWithId_, "");
 }
 
 std::shared_ptr<const ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
@@ -473,6 +487,55 @@ std::shared_ptr<const ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
       children.push_back(std::move(child));
     }
     BOLT_CHECK(!children.empty());
+
+    // Detect Spark 4.0 Variant structure: STRUCT<value BINARY, metadata BINARY>
+    // Promote only when the requested logical type explicitly asks for
+    // VARIANT. The raw Parquet schema alone is not specific enough because
+    // ordinary structs can also contain {value, metadata} binary children.
+    if (children.size() == 2 && children[0]->type()->isVarbinary() &&
+        children[1]->type()->isVarbinary()) {
+      auto child0Name =
+          std::static_pointer_cast<const ParquetTypeWithId>(children[0])->name_;
+      auto child1Name =
+          std::static_pointer_cast<const ParquetTypeWithId>(children[1])->name_;
+      folly::toLowerAscii(child0Name);
+      folly::toLowerAscii(child1Name);
+      bool isRequestedVariant = requestedType && requestedType->isVariant();
+      if (!isRequestedVariant && parentRequestedType) {
+        if (parentRequestedType->isVariant()) {
+          isRequestedVariant = true;
+        } else if (parentRequestedType->isRow()) {
+          auto childIdx =
+              parentRequestedType->asRow().getChildIdxIfExists(name);
+          if (childIdx.has_value()) {
+            isRequestedVariant =
+                parentRequestedType->asRow().childAt(*childIdx)->isVariant();
+          }
+        }
+      }
+      bool matchesVariantSchema =
+          (child0Name == "value" && child1Name == "metadata") ||
+          (child0Name == "metadata" && child1Name == "value");
+      if (matchesVariantSchema && isRequestedVariant) {
+        if (child0Name == "metadata") {
+          std::swap(children[0], children[1]);
+        }
+        return std::make_shared<const ParquetTypeWithId>(
+            VARIANT(),
+            std::move(children),
+            curSchemaIdx,
+            maxSchemaElementIdx,
+            ParquetTypeWithId::kNonLeaf,
+            std::move(name),
+            std::nullopt,
+            std::nullopt,
+            std::nullopt,
+            maxRepeat,
+            maxDefine,
+            isOptional,
+            isRepeated);
+      }
+    }
 
     if (schemaElement.__isset.converted_type) {
       switch (schemaElement.converted_type) {
@@ -683,6 +746,45 @@ std::shared_ptr<const ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
               maxDefine - 1,
               isOptional,
               isRepeated);
+        } else {
+          // Row type
+          // To support list backward compatibility, need create a new row type
+          // instance and set all the fields as its children.
+          auto childrenRowType =
+              createRowType(children, isFileColumnNamesReadAsLowerCase());
+          std::vector<std::shared_ptr<const ParquetTypeWithId::TypeWithId>>
+              rowChildren;
+          // In this legacy case, there is no middle layer between "array"
+          // node and the children nodes. Below creates this dummy middle
+          // layer to mimic the non-legacy case and fill the gap.
+          rowChildren.emplace_back(std::make_shared<const ParquetTypeWithId>(
+              childrenRowType,
+              std::move(children),
+              curSchemaIdx,
+              maxSchemaElementIdx,
+              ParquetTypeWithId::kNonLeaf,
+              "dummy",
+              std::nullopt,
+              std::nullopt,
+              std::nullopt,
+              maxRepeat,
+              maxDefine,
+              isOptional,
+              isRepeated));
+          return std::make_unique<ParquetTypeWithId>(
+              TypeFactory<TypeKind::ARRAY>::create(childrenRowType),
+              std::move(rowChildren),
+              curSchemaIdx,
+              maxSchemaElementIdx,
+              ParquetTypeWithId::kNonLeaf, // columnIdx,
+              std::move(name),
+              std::nullopt,
+              std::nullopt,
+              std::nullopt,
+              maxRepeat,
+              maxDefine,
+              isOptional,
+              isRepeated);
         }
       } else {
         // Row type
@@ -772,28 +874,45 @@ void ReaderBase::collectLogicalTypes(
     const std::shared_ptr<const dwio::common::TypeWithId>& type,
     const std::string& path) {
   auto parquetType = std::static_pointer_cast<const ParquetTypeWithId>(type);
-  if (parquetType->isLeaf()) {
-    if (parquetType->logicalType_.has_value()) {
-      if (!path.empty()) {
-        logicalTypesByPath_[path] = parquetType->logicalType_.value();
-      }
-    } else if (type->type()->kind() == TypeKind::ROW) {
-      // no-op for leaves of struct; handled via parent path
+  if (parquetType->logicalType_.has_value()) {
+    if (!path.empty()) {
+      logicalTypesByPath_[path] = parquetType->logicalType_.value();
     }
+  }
+
+  if (parquetType->isLeaf()) {
     return;
   }
-  if (type->type()->kind() == TypeKind::ROW) {
-    auto row = type->type()->asRow();
-    for (size_t i = 0; i < type->getChildren().size(); ++i) {
-      auto child = type->getChildren()[i];
-      auto childName = row.nameOf(i);
-      auto childPath = path.empty() ? childName : (path + "." + childName);
-      collectLogicalTypes(child, childPath);
+
+  for (auto& child : type->getChildren()) {
+    auto parquetChild =
+        std::static_pointer_cast<const ParquetTypeWithId>(child);
+    auto childPath =
+        path.empty() ? parquetChild->name_ : (path + "." + parquetChild->name_);
+    collectLogicalTypes(child, childPath);
+  }
+}
+
+void ReaderBase::collectConvertedTypes(
+    const std::shared_ptr<const dwio::common::TypeWithId>& type,
+    const std::string& path) {
+  auto parquetType = std::static_pointer_cast<const ParquetTypeWithId>(type);
+  if (parquetType->convertedType_.has_value()) {
+    if (!path.empty()) {
+      convertedTypesByPath_[path] = parquetType->convertedType_.value();
     }
-  } else {
-    for (auto& child : type->getChildren()) {
-      collectLogicalTypes(child, path);
-    }
+  }
+
+  if (parquetType->isLeaf()) {
+    return;
+  }
+
+  for (auto& child : type->getChildren()) {
+    auto parquetChild =
+        std::static_pointer_cast<const ParquetTypeWithId>(child);
+    auto childPath =
+        path.empty() ? parquetChild->name_ : (path + "." + parquetChild->name_);
+    collectConvertedTypes(child, childPath);
   }
 }
 
@@ -897,10 +1016,16 @@ TypePtr ReaderBase::convertType(
                 "{} converted type can only be set for thrift::Type::(FIXED_LEN_)BYTE_ARRAY.",
                 thrift::to_string(schemaElement.converted_type));
         }
+      case thrift::ConvertedType::ENUM: {
+        BOLT_CHECK_EQ(
+            schemaElement.type,
+            thrift::Type::BYTE_ARRAY,
+            "ENUM converted type can only be set for value of thrift::Type::BYTE_ARRAY");
+        return VARCHAR();
+      }
       case thrift::ConvertedType::MAP:
       case thrift::ConvertedType::MAP_KEY_VALUE:
       case thrift::ConvertedType::LIST:
-      case thrift::ConvertedType::ENUM:
       case thrift::ConvertedType::TIME_MILLIS:
       case thrift::ConvertedType::TIME_MICROS:
       case thrift::ConvertedType::BSON:
@@ -1260,6 +1385,7 @@ class ParquetRowReader::Impl {
     // Annotate scan spec with logical type names before filtering row groups.
     if (auto scanSpecPtr = options_.getScanSpec()) {
       const auto& ltMap = readerBase_->schemaLogicalTypes();
+      const auto& ctMap = readerBase_->schemaConvertedTypes();
       auto& scanSpec = *scanSpecPtr;
       auto annotate = [&](common::ScanSpec& spec,
                           const std::string& basePath,
@@ -1314,6 +1440,19 @@ class ParquetRowReader::Impl {
                 name));
           }
           spec.setLogicalTypeName(name);
+        }
+        auto ctIt = ctMap.find(path);
+        if (ctIt != ctMap.end()) {
+          const auto name = thrift::to_string(ctIt->second);
+          BOLT_CHECK(
+              spec.convertedTypeName().empty() ||
+                  spec.convertedTypeName() == name,
+              fmt::format(
+                  "ConvertedType mismatch for path {}: scanSpec={}, schema={}",
+                  path,
+                  spec.convertedTypeName(),
+                  name));
+          spec.setConvertedTypeName(name);
         }
         VLOG(2) << "Annotate path=" << path << " field=" << spec.fieldName()
                 << " kind=" << static_cast<int>(twi.type()->kind())
@@ -1424,15 +1563,104 @@ class ParquetRowReader::Impl {
       uint64_t size,
       bolt::VectorPtr& result,
       const dwio::common::Mutation* mutation) {
-    BOLT_DCHECK(!options_.getAppendRowNumberColumn());
     auto rowsToRead = nextReadSize(size);
     if (rowsToRead == kAtEnd) {
       return 0;
     }
     BOLT_DCHECK_GT(rowsToRead, 0);
-    columnReader_->next(rowsToRead, result, mutation);
+    if (!options_.getAppendRowNumberColumn() &&
+        !options_.getRowNumberColumnInfo().has_value()) {
+      columnReader_->next(rowsToRead, result, mutation);
+    } else {
+      readWithRowNumber(rowsToRead, result, mutation);
+    }
     currentRowInGroup_ += rowsToRead;
     return rowsToRead;
+  }
+
+  void readWithRowNumber(
+      uint64_t rowsToRead,
+      VectorPtr& result,
+      const dwio::common::Mutation* mutation) {
+    auto* rowVector = result->asUnchecked<RowVector>();
+    column_index_t numChildren = 0;
+    for (auto& column : options_.getScanSpec()->children()) {
+      if (column->projectOut()) {
+        ++numChildren;
+      }
+    }
+    dwio::common::RowNumberColumnInfo rowNumberColumnInfo;
+    if (options_.getRowNumberColumnInfo().has_value()) {
+      rowNumberColumnInfo = options_.getRowNumberColumnInfo().value();
+    } else {
+      rowNumberColumnInfo.insertPosition = numChildren;
+      rowNumberColumnInfo.name = "";
+    }
+    auto rowNumberColumnIndex = rowNumberColumnInfo.insertPosition;
+    auto rowNumberColumnName = rowNumberColumnInfo.name;
+    BOLT_CHECK_LE(rowNumberColumnIndex, numChildren);
+
+    VectorPtr rowNumVector;
+    if (rowVector->childrenSize() != numChildren) {
+      BOLT_CHECK_EQ(rowVector->childrenSize(), numChildren + 1);
+
+      rowNumVector = rowVector->childAt(rowNumberColumnIndex);
+      auto& rowType = rowVector->type()->asRow();
+      auto names = rowType.names();
+      auto types = rowType.children();
+      auto children = rowVector->children();
+      BOLT_DCHECK(!names.empty() && !types.empty() && !children.empty());
+      names.erase(names.begin() + rowNumberColumnIndex);
+      types.erase(types.begin() + rowNumberColumnIndex);
+      children.erase(children.begin() + rowNumberColumnIndex);
+      result = std::make_shared<RowVector>(
+          rowVector->pool(),
+          ROW(std::move(names), std::move(types)),
+          rowVector->nulls(),
+          rowVector->size(),
+          std::move(children));
+    }
+
+    const auto previousRow = nextRowNumber();
+    columnReader_->next(rowsToRead, result, mutation);
+    FlatVector<int64_t>* flatRowNum = nullptr;
+    if (rowNumVector && BaseVector::isVectorWritable(rowNumVector)) {
+      flatRowNum = rowNumVector->asFlatVector<int64_t>();
+    }
+    if (flatRowNum) {
+      flatRowNum->clearAllNulls();
+      flatRowNum->resize(result->size());
+    } else {
+      rowNumVector = std::make_shared<FlatVector<int64_t>>(
+          result->pool(),
+          BIGINT(),
+          nullptr,
+          result->size(),
+          AlignedBuffer::allocate<int64_t>(result->size(), result->pool()),
+          std::vector<BufferPtr>());
+      flatRowNum = rowNumVector->asUnchecked<FlatVector<int64_t>>();
+    }
+
+    auto rowOffsets = columnReader_->outputRows();
+    BOLT_DCHECK_EQ(rowOffsets.size(), result->size());
+    auto* rawRowNum = flatRowNum->mutableRawValues();
+    for (int i = 0; i < rowOffsets.size(); ++i) {
+      rawRowNum[i] = previousRow + rowOffsets[i];
+    }
+    rowVector = result->asUnchecked<RowVector>();
+    auto& rowType = rowVector->type()->asRow();
+    auto names = rowType.names();
+    auto types = rowType.children();
+    auto children = rowVector->children();
+    names.insert(names.begin() + rowNumberColumnIndex, rowNumberColumnName);
+    types.insert(types.begin() + rowNumberColumnIndex, BIGINT());
+    children.insert(children.begin() + rowNumberColumnIndex, rowNumVector);
+    result = std::make_shared<RowVector>(
+        rowVector->pool(),
+        ROW(std::move(names), std::move(types)),
+        rowVector->nulls(),
+        rowVector->size(),
+        std::move(children));
   }
 
   std::optional<size_t> estimatedRowSize() const {

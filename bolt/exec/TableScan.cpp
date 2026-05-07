@@ -36,7 +36,6 @@
 #include "bolt/common/base/Exceptions.h"
 #include "bolt/common/testutil/TestValue.h"
 #include "bolt/common/time/Timer.h"
-#include "bolt/connectors/hive/HiveConnectorSplit.h"
 #include "bolt/exec/Operator.h"
 #include "bolt/exec/OperatorMetric.h"
 #include "bolt/exec/TableScan.h"
@@ -268,12 +267,7 @@ RowVectorPtr TableScan::getOutput() {
       NanosecondTimer splitTimer(&prepareSplitTimeNs_);
 
       // update currentSplitStr_ only when new split is added
-      if (auto s = std::dynamic_pointer_cast<
-              const connector::hive::HiveConnectorSplit>(connectorSplit)) {
-        currentSplitStr_ = s->filePath;
-      } else {
-        currentSplitStr_ = "empty_split_str__cast_to_HiveConnectorSplit_failed";
-      }
+      currentSplitStr_ = connectorSplit->toString();
 
       BOLT_CHECK_EQ(
           connector_->connectorId(),
@@ -287,7 +281,7 @@ RowVectorPtr TableScan::getOutput() {
             planNodeId(),
             connectorPool_,
             nullptr,
-            asyncThreadCtx_.get());
+            asyncThreadCtx_);
         dataSource_ = connector_->createDataSource(
             outputType_,
             tableHandle_,
@@ -459,8 +453,7 @@ void TableScan::preload(std::shared_ptr<connector::ConnectorSplit> split) {
            planNodeId(),
            connectorPool_,
            nullptr,
-           asyncThreadCtx_.get()),
-       asyncThreadCtx = asyncThreadCtx_,
+           asyncThreadCtx_),
        task = operatorCtx_->task(),
        pendingDynamicFilters = pendingDynamicFilters_,
        split]() -> std::unique_ptr<connector::DataSource> {
@@ -475,19 +468,6 @@ void TableScan::preload(std::shared_ptr<connector::ConnectorSplit> split) {
              },
              &debugString});
 
-        // let TableScan::close() wait for this AsyncSource to finish
-        auto guard = folly::makeGuard([&] {
-          try {
-            if (ctx->asyncThreadCtx()) {
-              ctx->asyncThreadCtx()->out();
-            }
-          } catch (std::exception& e) {
-            LOG(ERROR) << "Exception in TableScan::preload guard: " << e.what();
-          }
-        });
-        if (ctx->asyncThreadCtx()) {
-          ctx->asyncThreadCtx()->in();
-        }
         auto ptr = connector->createDataSource(
             type, table, columns, ctx, task->queryCtx()->queryConfig());
         if (task->isCancelled()) {
@@ -516,14 +496,14 @@ void TableScan::checkPreload() {
           [executor, this](std::shared_ptr<connector::ConnectorSplit> split) {
             preload(split);
 
-            auto hiveSplit = std::dynamic_pointer_cast<
-                const connector::hive::HiveConnectorSplit>(split);
-            int64_t preloadBytes = hiveSplit ? hiveSplit->length : 0;
-            connector::AsyncThreadCtx::Guard guard(
-                asyncThreadCtx_.get(), preloadBytes);
+            int64_t preloadBytes = split->splitSizeBytes();
             executor->add([connectorSplit = split,
                            ctx = asyncThreadCtx_,
-                           inGuard = std::move(guard)]() mutable {
+                           preloadBytes]() mutable {
+              connector::AsyncThreadCtx::Guard guard(ctx.get(), preloadBytes);
+              if (!guard) {
+                return;
+              }
               connectorSplit->dataSource->prepare();
               connectorSplit.reset();
             });
@@ -591,6 +571,7 @@ void TableScan::close() {
   if (dataSource_) {
     dataSource_->close(); // release all bufferedInputs(loads)
   }
+
   // wait all async threads to be finished
   uint64_t waitMs;
   {

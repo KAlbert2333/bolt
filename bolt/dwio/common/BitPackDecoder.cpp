@@ -281,7 +281,7 @@ int32_t decode1To24_sve(
     uint32_t eightInts[8];
     if (width <= 16 && endRow - row == 7) {
       // Special cases for 8 contiguous values with <= 16 bits.
-      if (width <= 8) {
+      if constexpr (width <= 8) {
         uint64_t eightBytes;
         if (width == 8) {
           if (!bitOffset) {
@@ -310,7 +310,7 @@ int32_t decode1To24_sve(
         // depends on the start bit position. For either case we fill
         // an array of 2x64 bits and widen that to a 8x32 word.
         uint64_t words[2];
-        if (width <= 14) {
+        if constexpr (width <= 14) {
           auto bit = row * width + bitOffset;
           auto byte = bit >> 3;
           auto shift = bit & 7;
@@ -330,7 +330,7 @@ int32_t decode1To24_sve(
               bits, bitOffset + width * row, 64);
           words[1] = bits::detail::loadBits<uint64_t>(
               bits, bitOffset + width * (row + 4), 64);
-          if (width == 15) {
+          if constexpr (width == 15) {
             svuint64_t word_vec = svdup_u64(words[0]);
             svuint64_t result_vec = svbdep_u64(word_vec, kBdepMask16);
             words[0] = svlastb_u64(pg1, result_vec);

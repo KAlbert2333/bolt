@@ -65,6 +65,11 @@ void registerDatetimeFunctions(const std::string& prefix) {
       int64_t,
       Varchar,
       Varchar>({prefix + "unix_timestamp", prefix + "to_unix_timestamp"});
+  registerFunction<
+      UnixTimestampParseWithFormatFunction,
+      int64_t,
+      Date,
+      Varchar>({prefix + "unix_timestamp", prefix + "to_unix_timestamp"});
 
   registerFunction<
       UnixTimestampParseWithFormatAndTimestampFunction,
@@ -154,10 +159,7 @@ void registerDatetimeFunctions(const std::string& prefix) {
   registerFunction<MonthsBetweenFunction, double, Timestamp, Timestamp, bool>(
       {prefix + "months_between"});
 
-  registerFunction<DayOfWeekFunction, int32_t, Timestamp>(
-      {prefix + "dow", prefix + "dayofweek"});
-  registerFunction<DayOfWeekFunction, int32_t, Date>(
-      {prefix + "dow", prefix + "dayofweek"});
+  registerFunction<DayOfWeekFunction, int32_t, Date>({prefix + "dayofweek"});
 
   registerTimestampWithTimeZoneType();
   registerFunction<QuarterFunction, int32_t, Date>({prefix + "quarter"});

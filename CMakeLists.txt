@@ -89,6 +89,12 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
   add_definitions(-D OS_MACOSX)
 endif()
 
+# Only use compiler-rt when building with Clang on Linux for ARM/AArch64
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND OS_LINUX AND (ARCH_AARCH64 OR ARCH_ARM))
+  add_compile_options(-rtlib=compiler-rt)
+  add_link_options(-rtlib=compiler-rt)
+endif()
+
 list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake"
      "${PROJECT_SOURCE_DIR}/CMake/third-party"
 )
@@ -118,7 +124,6 @@ option(BOLT_BUILD_TESTING_WITH_COVERAGE "Enable Bolt tests with coverage statist
 option(BOLT_ENABLE_ADDRESS_SANITIZER "Enable Address Sanitizer to check for memory related errors"
        OFF
 )
-option(BOLT_ENABLE_DUCKDB "Build duckDB to enable differential testing." ON)
 option(BOLT_ENABLE_EXEC "Build exec." ON)
 option(BOLT_ENABLE_AGGREGATES "Build aggregates." ON)
 option(BOLT_ENABLE_HIVE_CONNECTOR "Build Hive connector." ON)
@@ -131,7 +136,7 @@ option(BOLT_ENABLE_SKETCH_FUNCTIONS "Build DataSketches SQL functions." OFF)
 option(BOLT_ENABLE_COLOCATE_FUNCTIONS "Enable colocate function support" OFF)
 option(ALLOW_REMOTE_COLOCATE_REGISTER "Enable remote colocate function register" OFF)
 option(BOLT_ENABLE_EXPRESSION "Build expression." ON)
-option(BOLT_ENABLE_PARSE "Build parser used for unit tests." ON)
+option(BOLT_ENABLE_PARSE "Build parser used for unit tests." OFF)
 option(BOLT_ENABLE_EXAMPLES
        "Build examples. This will enable BOLT_ENABLE_EXPRESSION automatically." OFF
 )
@@ -214,7 +219,6 @@ if(${BOLT_BUILD_MINIMAL})
   # Enable and disable components for bolt base build
   set(BOLT_BUILD_TESTING OFF)
   set(BOLT_ENABLE_PRESTO_FUNCTIONS ON)
-  set(BOLT_ENABLE_DUCKDB OFF)
   set(BOLT_ENABLE_EXPRESSION ON)
   set(BOLT_ENABLE_PARSE OFF)
   set(BOLT_ENABLE_EXEC OFF)
@@ -236,7 +240,6 @@ endif()
 if(${BOLT_BUILD_TESTING})
   # Enable all components to build testing binaries
   set(BOLT_ENABLE_PRESTO_FUNCTIONS ON)
-  set(BOLT_ENABLE_DUCKDB ON)
   set(BOLT_ENABLE_EXPRESSION ON)
   set(BOLT_ENABLE_PARSE ON)
   set(BOLT_ENABLE_EXEC ON)
@@ -246,7 +249,7 @@ if(${BOLT_BUILD_TESTING})
   # set(BOLT_ENABLE_ARROW_CONNECTOR ON)
   set(BOLT_ENABLE_SPARK_FUNCTIONS ON)
   set(BOLT_ENABLE_FLINK_FUNCTIONS ON)
-  set(BOLT_ENABLE_TEST_UTILS OFF)
+  set(BOLT_ENABLE_TEST_UTILS ON)
   set(BOLT_ENABLE_EXAMPLES ON)
 else()
   set(BOLT_BUILD_TESTING_WITH_COVERAGE OFF)
@@ -260,17 +263,16 @@ endif()
 if(${BOLT_BUILD_BENCHMARKS})
   set(BOLT_BUILD_BENCHMARKS ON)
   set(BOLT_BUILD_BENCHMARKS_BASIC ON)
-  set(BOLT_ENABLE_DUCKDB ON)
-  set(BOLT_ENABLE_PARSE ON)
   set(BOLT_ENABLE_PARQUET ON)
   set(BOLT_ENABLE_ORC ON)
   set(BOLT_BUILD_TEST_UTILS ON)
-  set(BOLT_BUILD_TESTING OFF)
   set(BOLT_ENABLE_EXAMPLES OFF)
-  set(BOLT_ENABLE_GCS OFF)
-  set(BOLT_ENABLE_ABFS OFF)
   set(BOLT_ENABLE_SUBSTRAIT OFF)
   set(BOLT_CODEGEN_SUPPORT OFF)
+endif()
+
+if (${BOLT_ENABLE_TEST_UTILS})
+  set(BOLT_ENABLE_PARSE ON)
 endif()
 
 # enable test coverage
@@ -297,13 +299,11 @@ endif()
 
 if(BOLT_BUILD_TESTING OR BOLT_BUILD_TEST_UTILS)
   find_package(cpr CONFIG REQUIRED)
-  set(BOLT_ENABLE_DUCKDB ON)
   set(BOLT_ENABLE_PARSE ON)
 endif()
 
 if(${BOLT_BUILD_PYTHON_PACKAGE})
   set(BOLT_ENABLE_PRESTO_FUNCTIONS ON)
-  set(BOLT_ENABLE_DUCKDB ON)
   set(BOLT_ENABLE_EXPRESSION ON)
   set(BOLT_ENABLE_PARSE ON)
   set(BOLT_ENABLE_EXEC ON)
@@ -367,7 +367,7 @@ if(BOLT_ENABLE_GCS)
   if(GCSSDK_ROOT_DIR)
     list(APPEND CMAKE_PREFIX_PATH ${GCSSDK_ROOT_DIR})
   endif()
-  find_package(google_cloud_cpp_storage REQUIRED)
+  find_package(google-cloud-cpp CONFIG QUIET COMPONENTS storage)
   add_definitions(-DBOLT_ENABLE_GCS)
 endif()
 
@@ -376,9 +376,7 @@ if(BOLT_ENABLE_ABFS)
   if(AZURESDK_ROOT_DIR)
     list(APPEND CMAKE_PREFIX_PATH ${AZURESDK_ROOT_DIR})
   endif()
-  # files-datalake is built on blobs
-  find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
-  find_package(azure-storage-files-datalake-cpp CONFIG REQUIRED)
+  find_package(AzureSDK CONFIG REQUIRED)
   add_definitions(-DBOLT_ENABLE_ABFS)
 endif()
 
@@ -426,7 +424,7 @@ endif()
 # DeveloperTools/TwoLevelNamespaces.html Enables -flat_namespace so type_info can be deudplicated
 # across .so boundaries
 if(APPLE)
-  add_link_options("-Wl,-flat_namespace,-no_warn_duplicate_libraries" "-Wl,--export-dynamic")
+  add_link_options("-Wl,-flat_namespace,-no_warn_duplicate_libraries" "-Wl,-export_dynamic")
 elseif(UNIX)
   add_link_options("-Wl,--export-dynamic")
 else()
@@ -440,7 +438,7 @@ endif()
 # Required so bolt code can be used in a dynamic library
 set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # execute_process( COMMAND bash -c "( source
@@ -602,13 +600,6 @@ else()
   set(FILESYSTEM "")
 endif()
 
-if(BOLT_BUILD_TESTING AND NOT BOLT_ENABLE_DUCKDB)
-  message(
-    FATAL_ERROR
-      "Unit tests require duckDB to be enabled (BOLT_ENABLE_DUCKDB=ON or BOLT_BUILD_TESTING=OFF)"
-  )
-endif()
-
 set(BOLT_DISABLE_GOOGLETEST OFF)
 if(NOT BOLT_BUILD_TEST_UTILS AND NOT BOLT_BUILD_TESTING)
   set(BOLT_DISABLE_GOOGLETEST ON)
@@ -634,6 +625,7 @@ find_package(roaring REQUIRED)
 
 include_directories(${CMAKE_SOURCE_DIR})
 include_directories(${CMAKE_SOURCE_DIR}/bolt)
+include_directories(${CMAKE_BINARY_DIR}/gen_cpp)
 
 if(NOT BOLT_DISABLE_GOOGLETEST)
   find_package(GTest CONFIG REQUIRED)
@@ -713,7 +705,9 @@ if("${TREAT_WARNINGS_AS_ERRORS}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
 endif()
 
-find_package(duckdb REQUIRED CONFIG)
+if(BOLT_BUILD_TEST_UTILS)
+  find_package(duckdb REQUIRED CONFIG)
+endif()
 
 # if both JIT and TORCH are enabled, torch includes a llvm header as a transitive header included by
 # jit. Therefore, LLVM definitions need to be available to torch module and not just the jit module.

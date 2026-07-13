@@ -19,10 +19,23 @@ add_test(bolt_shuffle_spark_celeborn_test bolt_shuffle_spark_celeborn_test)
 target_link_libraries(
     bolt_shuffle_spark_celeborn_test
     PRIVATE
+        bolt_shuffle_spark_impl
         bolt_testutils
         glog::glog
         GTest::gtest
         GTest::gtest_main
+)
+
+add_test(
+    NAME bolt_shuffle_spark_celeborn_e2e_test
+    COMMAND
+        bolt_shuffle_spark_celeborn_test
+        --gtest_filter=CelebornE2ESmokeTest.nativeClientPushAndReadBack
+)
+set_tests_properties(
+    bolt_shuffle_spark_celeborn_e2e_test
+    PROPERTIES
+        LABELS "celeborn_e2e"
 )
 
 add_executable(
@@ -92,6 +105,28 @@ add_test(
 )
 
 add_executable(
+    bolt_shuffle_spark_misc_test
+    ShuffleTestBase.cpp
+    ShuffleMiscTest.cpp
+)
+
+target_link_libraries(
+    bolt_shuffle_spark_misc_test
+    PRIVATE
+        bolt_shuffle_spark_impl
+        bolt_vector_fuzzer
+        bolt_testutils
+        GTest::gtest_main
+        GTest::gmock
+)
+
+# Add test
+add_test(
+    NAME bolt_shuffle_spark_misc_test
+    COMMAND bolt_shuffle_spark_misc_test
+)
+
+add_executable(
     bolt_shuffle_codec_test
     CodecTest.cpp
 )
@@ -127,4 +162,20 @@ target_link_libraries(
 add_test(
     NAME bolt_shuffle_adaptive_zstd_codec_test
     COMMAND bolt_shuffle_adaptive_zstd_codec_test
+)
+
+add_executable(bolt_shuffle_reader_test BoltShuffleReaderTest.cpp)
+
+target_link_libraries(
+    bolt_shuffle_reader_test
+    PRIVATE
+        bolt_shuffle_spark_impl
+        bolt_testutils
+        GTest::gtest
+        GTest::gmock
+)
+
+add_test(
+    NAME bolt_shuffle_reader_test
+    COMMAND bolt_shuffle_reader_test
 )

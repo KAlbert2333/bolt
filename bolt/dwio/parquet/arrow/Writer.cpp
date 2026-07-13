@@ -331,6 +331,9 @@ class FileWriterImpl : public FileWriter {
         row_group_writer_(nullptr),
         column_write_context_(pool, arrow_properties.get()),
         arrow_properties_(std::move(arrow_properties)),
+        io_context_(std::make_unique<::arrow::io::IOContext>(
+            column_write_context_.memory_pool)),
+        arrow_reader_properties_(std::make_unique<ArrowReaderProperties>()),
         closed_(false) {
     if (arrow_properties_->use_threads()) {
       parallel_column_write_contexts_.reserve(schema_->num_fields());
@@ -342,13 +345,14 @@ class FileWriterImpl : public FileWriter {
             pool, arrow_properties_.get());
       }
     }
+    arrow_reader_properties_->set_io_context(*io_context_);
   }
 
   Status Init() {
     return SchemaManifest::Make(
         writer_->schema(),
         /*schema_metadata=*/nullptr,
-        default_arrow_reader_properties(),
+        *arrow_reader_properties_,
         &schema_manifest_);
   }
 
@@ -587,6 +591,22 @@ class FileWriterImpl : public FileWriter {
     return 0;
   }
 
+  WriterMemoryStats memoryStats() const override {
+    WriterMemoryStats stats;
+    if (row_group_writer_ != nullptr) {
+      stats = row_group_writer_->memory_stats();
+    }
+    stats.writeContextScratchAllocatedBytes =
+        column_write_context_.scratch_allocated_bytes();
+    for (const auto& ctx : parallel_column_write_contexts_) {
+      stats.writeContextScratchAllocatedBytes += ctx.scratch_allocated_bytes();
+    }
+    stats.trackedWriterMemoryBytes = stats.bufferedPageActualMemoryBytes +
+        stats.encoderCurrentBytes + stats.columnScratchAllocatedBytes +
+        stats.writeContextScratchAllocatedBytes;
+    return stats;
+  }
+
  private:
   friend class FileWriter;
 
@@ -598,6 +618,8 @@ class FileWriterImpl : public FileWriter {
   RowGroupWriter* row_group_writer_;
   ArrowWriteContext column_write_context_;
   std::shared_ptr<ArrowWriterProperties> arrow_properties_;
+  std::unique_ptr<::arrow::io::IOContext> io_context_;
+  std::unique_ptr<ArrowReaderProperties> arrow_reader_properties_;
   bool closed_;
 
   /// If arrow_properties_.use_threads() is true, the vector size is equal to
@@ -708,7 +730,8 @@ Result<std::unique_ptr<FileWriter>> FileWriter::Open(
           std::move(sink),
           schema_node,
           std::move(properties),
-          std::move(metadata)));
+          std::move(metadata),
+          !arrow_properties->use_threads()));
 
   std::unique_ptr<FileWriter> writer;
   auto schema_ptr = std::make_shared<::arrow::Schema>(schema);

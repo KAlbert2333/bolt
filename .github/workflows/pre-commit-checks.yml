@@ -17,8 +17,6 @@ name: pre-commit checks
 on:
   pull_request:
     branches: [ main ]
-  push:
-    branches: [ main ]
   merge_group:
 
 concurrency:
@@ -32,6 +30,8 @@ env:
   CI_NUM_THREADS: "16"
   IN_CI: '1'
   GOMAXPROCS: 8
+  GOMODCACHE: /data/pre-commit-cache/gomodcache
+  GOCACHE: /data/pre-commit-cache/gocache
 
 jobs:
   lint:

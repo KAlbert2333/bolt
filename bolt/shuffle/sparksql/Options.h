@@ -36,6 +36,7 @@
 #include <bolt/common/base/Exceptions.h>
 #include <fmt/format.h>
 #include <cstdint>
+#include "bolt/row/RowFormat.h"
 #include "bolt/shuffle/sparksql/compression/Codec.h"
 #include "bolt/shuffle/sparksql/partition_writer/rss/RssClient.h"
 #include "bolt/shuffle/sparksql/partitioner/Partitioning.h"
@@ -43,6 +44,7 @@ namespace bytedance::bolt::shuffle::sparksql {
 
 static constexpr int16_t kDefaultBatchSize = 4096;
 static constexpr int32_t kDefaultShuffleBatchByteSize = 41943040;
+static constexpr int32_t kDefaultShuffleBufferSize = 40 * 1024 * 1024;
 static constexpr int16_t kDefaultShuffleWriterBufferSize = 4096;
 static constexpr int64_t kDefaultMergeBufferBytesThreshold = 40 * 1024 * 1024;
 static constexpr int32_t kDefaultNumSubDirs = 64;
@@ -61,9 +63,16 @@ static constexpr int32_t kDefaultPreAllocSize =
 static constexpr int32_t kDefaultAccumulateBatchMaxBatches = 65535;
 static constexpr int32_t kDefaultAccumulateBatchMaxColumns =
     0; // default is close
+static constexpr int32_t kDefaultShuffleCheckMaxColumns =
+    std::numeric_limits<int32_t>::max();
 
 static constexpr int32_t rowBasePartitionThreshold = 8000;
 static constexpr int32_t rowBaseColumnNumThreshold = 5;
+
+// Whether to reuse a single BufferedInputStream across all reader streams by
+// chaining them into one continuous stream, instead of creating a new
+// BufferedInputStream (and deserializer) per stream.
+static constexpr bool kDefaultReuseBufferedInputStream = false;
 
 static constexpr int32_t kMaxShuffleWriterBatchBytes =
     200 * 1024 * 1024; // 200MB
@@ -96,12 +105,20 @@ struct ShuffleReaderOptions {
   std::string codecBackend = "none";
   int32_t batchSize = kDefaultBatchSize;
   int32_t shuffleBatchByteSize = kDefaultShuffleBatchByteSize;
+  int32_t shuffleBufferSize = kDefaultShuffleBufferSize;
   int32_t numPartitions = -1;
   std::string partitionShortName = "";
   int32_t forceShuffleWriterType = -1;
 
+  // On-wire row format for the row-based shuffle. Must match the writer side.
+  row::RowFormat rowFormat = row::RowFormat::COMPACT;
+
   // Enable checksum in codec for shuffle data corruption detection
   bool checksumEnabled = true;
+
+  // Reuse a single BufferedInputStream across all reader streams to avoid the
+  // overhead of repeatedly creating/destroying one per stream.
+  bool reuseBufferedInputStream = kDefaultReuseBufferedInputStream;
 };
 
 struct PartitionWriterOptions {
@@ -146,7 +163,6 @@ struct ShuffleWriterOptions {
   Partitioning partitioning;
   int64_t taskAttemptId = -1;
   int32_t startPartitionId = 0;
-  bool sort_before_repartition = true;
   int32_t forceShuffleWriterType = kDefaultForceShuffleWriterType;
   int32_t useV2PreallocSizeThreshold = kDefaultUseV2PreallocSizeThreshold;
   int32_t rowvectorModeCompressionMinColumns =
@@ -157,6 +173,9 @@ struct ShuffleWriterOptions {
   int32_t accumulateBatchMaxColumns = kDefaultAccumulateBatchMaxColumns;
   int32_t accumulateBatchMaxBatches = kDefaultAccumulateBatchMaxBatches;
   int32_t recommendedColumn2RowSize = 0;
+  double shuffleCheckRatio = 0;
+  int32_t shuffleCheckMaxColumns = kDefaultShuffleCheckMaxColumns;
+  row::RowFormat rowFormat = row::RowFormat::COMPACT;
   PartitionWriterOptions partitionWriterOptions{};
 };
 
@@ -186,6 +205,14 @@ struct ShuffleWriterMetrics {
   std::vector<int64_t> partitionLengths{};
   std::vector<int64_t> rawPartitionLengths{}; // Uncompressed size.
 };
+
+// Only partitioning that has pid support adaptive shuffle writer, otherwise
+// force use V1
+inline bool supportAdaptiveShuffleWriter(const Partitioning& partitioning) {
+  return partitioning == Partitioning::kRange ||
+      partitioning == Partitioning::kHash;
+}
+
 } // namespace bytedance::bolt::shuffle::sparksql
 
 template <>

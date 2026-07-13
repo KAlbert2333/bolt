@@ -46,6 +46,12 @@ target_link_libraries(
   ${BOLT_BENCHMARK_DEPS}
 )
 
+add_executable(bolt_sparksql_benchmarks_simd_compare SIMDCompareBenchmark.cpp)
+target_link_libraries(
+  bolt_sparksql_benchmarks_simd_compare PRIVATE
+  bolt_benchmark_builder
+  ${FOLLY_BENCHMARK})
+
 add_executable(bolt_sparksql_benchmarks_regex RegexBenchmark.cpp)
 target_link_libraries(
   bolt_sparksql_benchmarks_regex PRIVATE
@@ -69,6 +75,20 @@ target_link_libraries(
 add_executable(bolt_sparksql_benchmarks_map MapBenchmark.cpp)
 target_link_libraries(
   bolt_sparksql_benchmarks_map PRIVATE
+  bolt_benchmark_builder
+  ${BOLT_BENCHMARK_DEPS}
+)
+
+add_executable(bolt_sparksql_benchmarks_get_funcs FunctionBenchmark.cpp)
+target_link_libraries(
+  bolt_sparksql_benchmarks_get_funcs PRIVATE
+  bolt_benchmark_builder
+  ${BOLT_BENCHMARK_DEPS}
+)
+
+add_executable(bolt_sparksql_benchmarks_unix_timestamp UnixTimestampBenchmark.cpp)
+target_link_libraries(
+  bolt_sparksql_benchmarks_unix_timestamp PRIVATE
   bolt_benchmark_builder
   ${BOLT_BENCHMARK_DEPS}
 )

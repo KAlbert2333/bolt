@@ -20,6 +20,9 @@
 #include "bolt/connectors/paimon/PaimonConfig.h"
 #include "bolt/connectors/paimon/PaimonConnectorSplit.h"
 #include "bolt/connectors/paimon/PaimonTableHandle.h"
+#include "bolt/core/ExpressionEvaluator.h"
+#include "bolt/exec/OperatorUtils.h"
+#include "bolt/vector/SelectivityVector.h"
 
 // Forward declare paimon types
 namespace paimon {
@@ -64,18 +67,27 @@ class PaimonDataSource : public DataSource {
       override {}
 
  private:
+  vector_size_t evaluateRemainingFilter(RowVectorPtr& rowVector);
+
   std::shared_ptr<const RowType> outputType_;
+  RowTypePtr filterRowType_;
   std::shared_ptr<PaimonTableHandle> tableHandle_;
+  core::ExpressionEvaluator* const expressionEvaluator_;
   memory::MemoryPool* pool_;
 
-  std::unique_ptr<::paimon::BatchReader> reader_;
+  std::vector<std::unique_ptr<::paimon::BatchReader>> holdReader_;
+  std::unique_ptr<::paimon::BatchReader> currentReader_;
   std::unique_ptr<::paimon::TableRead> tableRead_;
   std::vector<std::shared_ptr<::paimon::Split>> inputSplits_;
   std::shared_ptr<::paimon::MemoryPool> paimonPool_;
-  std::shared_ptr<PaimonConnectorSplit> currentSplit_;
 
   uint64_t completedRows_{0};
   uint64_t completedBytes_{0};
+
+  std::unique_ptr<exec::ExprSet> remainingFilterExprSet_;
+  VectorPtr filterResult_;
+  SelectivityVector filterRows_;
+  exec::FilterEvalCtx filterEvalCtx_;
 };
 
 } // namespace bytedance::bolt::connector::paimon

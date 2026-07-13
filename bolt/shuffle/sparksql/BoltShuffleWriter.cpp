@@ -32,6 +32,8 @@
 #include "BoltShuffleWriter.h"
 #include <arrow/io/memory.h>
 #include <cstdint>
+#include <sstream>
+#include <stdexcept>
 #include "bolt/buffer/Buffer.h"
 #include "bolt/common/base/Nulls.h"
 #include "bolt/shuffle/sparksql/Utils.h"
@@ -416,6 +418,10 @@ void BoltShuffleWriter::ensureVectorLoaded(bytedance::bolt::RowVectorPtr rv) {
   if (isLazyNotLoaded(*rv)) {
     rv->loadedVector();
   }
+}
+
+std::string BoltShuffleWriter::toString() const {
+  return "BoltShuffleWriter";
 }
 
 arrow::Status BoltShuffleWriter::init() {
@@ -847,20 +853,132 @@ arrow::Status BoltShuffleWriter::doSplit(
 arrow::Status BoltShuffleWriter::splitRowVector(
     const bytedance::bolt::RowVector& rv) {
   SCOPED_TIMER(cpuWallTimingList_[CpuWallTimingSplitRV]);
-
+  auto check = [&](const bytedance::bolt::RowVector& vector,
+                   std::string funcLine) {
+    // Pre-compute addresses pointing to current write position so that
+    // checkFixedColumnCopyValue does not need to consider the
+    // partitionBufferBase_ offset. Only compute for columns that have
+    // a valid check function.
+    std::vector<std::vector<uint8_t*>> currentFixedWidthValueAddrs(
+        fixedWidthCheckEntries_.size());
+    for (size_t i = 0; i < fixedWidthCheckEntries_.size(); ++i) {
+      const auto col = fixedWidthCheckEntries_[i].col;
+      const uint64_t valueWidth = fixedColValueSize_[col];
+      currentFixedWidthValueAddrs[i].resize(numPartitions_, nullptr);
+      for (auto pid = 0; pid < numPartitions_; ++pid) {
+        auto* addr = partitionFixedWidthValueAddrs_[col][pid];
+        if (addr != nullptr && valueWidth > 0) {
+          addr += static_cast<uint64_t>(partitionBufferBase_[pid]) * valueWidth;
+        }
+        currentFixedWidthValueAddrs[i][pid] = addr;
+      }
+    }
+    try {
+      checkFixedColumnCopyValue(
+          vector, currentFixedWidthValueAddrs, std::move(funcLine));
+    } catch (const std::runtime_error& e) {
+      auto msg = std::string(e.what());
+      int partition = std::stoi(msg.substr(0, msg.find(":")));
+      int colIdx = std::stoi(msg.substr(msg.find(":") + 1));
+      auto col = 0;
+      while (simpleColumnIndices_[col] != colIdx) {
+        ++col;
+      }
+      BOLT_CHECK(col < fixedWidthColumnCount_);
+      // print src[colId] and dest[colId][partition]
+      auto srcColumn = rv.childAt(colIdx);
+      LOG(ERROR) << msg << ", partition: " << partition << ", col: " << colIdx
+                 << ", col: " << col
+                 << ", srcColumn : " << srcColumn->type()->toString() << ", "
+                 << srcColumn->size()
+                 << " values: " << srcColumn->toPrettyString();
+      std::stringstream ss;
+      int partSize =
+          partition2RowCount_[partition] + partitionBufferBase_[partition];
+      const uint8_t* dstNullsPid = partitionValidityAddrs_[col][partition];
+      auto isNullAt = [&](int i) {
+        return dstNullsPid != nullptr &&
+            !bytedance::bolt::bits::isBitSet(dstNullsPid, i);
+      };
+      ss << "partition base size: " << partitionBufferBase_[partition]
+         << " , delta size: " << partition2RowCount_[partition]
+         << " , srcColumn values: ";
+      auto flushIfNeeded = [&](int i, bool force) {
+        if (force || (i + 1) % 1024 == 0) {
+          LOG(ERROR) << ss.str();
+          ss.str("");
+          ss.clear();
+        }
+      };
+      switch (arrowColumnTypes_[colIdx]->id()) {
+        case arrow::Type::INT32: {
+          int* dstColumn = (int*)partitionFixedWidthValueAddrs_[col][partition];
+          for (auto i = 0; i < partSize; ++i) {
+            if (isNullAt(i)) {
+              ss << "null,";
+            } else {
+              ss << dstColumn[i] << ",";
+            }
+            flushIfNeeded(i, false);
+          }
+          break;
+        }
+        case arrow::Type::INT64: {
+          int64_t* dstColumn =
+              (int64_t*)partitionFixedWidthValueAddrs_[col][partition];
+          for (auto i = 0; i < partSize; ++i) {
+            if (isNullAt(i)) {
+              ss << "null,";
+            } else {
+              ss << dstColumn[i] << ",";
+            }
+            flushIfNeeded(i, false);
+          }
+          break;
+        }
+        case arrow::Type::FLOAT: {
+          float* dstColumn =
+              (float*)partitionFixedWidthValueAddrs_[col][partition];
+          for (auto i = 0; i < partSize; ++i) {
+            if (isNullAt(i)) {
+              ss << "null,";
+            } else {
+              ss << dstColumn[i] << ",";
+            }
+            flushIfNeeded(i, false);
+          }
+          break;
+        }
+        case arrow::Type::DOUBLE: {
+          double* dstColumn =
+              (double*)partitionFixedWidthValueAddrs_[col][partition];
+          for (auto i = 0; i < partSize; ++i) {
+            if (isNullAt(i)) {
+              ss << "null,";
+            } else {
+              ss << dstColumn[i] << ",";
+            }
+            flushIfNeeded(i, false);
+          }
+          break;
+        }
+        default:
+          ss << "unsupported " << arrowColumnTypes_[colIdx]->name();
+          break;
+      }
+      if (!ss.str().empty()) {
+        flushIfNeeded(partSize, true);
+      }
+      BOLT_CHECK(false, funcLine + " checkCopyValue failed on " + msg);
+    }
+    return arrow::Status::OK();
+  };
   // now start to split the RowVector
   RETURN_NOT_OK(splitFixedWidthValueBuffer(rv, partitionFixedWidthValueAddrs_));
   RETURN_NOT_OK(splitValidityBuffer<true>(rv));
   RETURN_NOT_OK(splitBinaryArray(rv));
   RETURN_NOT_OK(splitComplexType(rv));
-
-  RETURN_NOT_OK(withShuffleCheck(
-      rv,
-      std::string(__FILE__) + ":" + std::to_string(__LINE__) + ":after all:",
-      [&](const bytedance::bolt::RowVector& vector, std::string funcLine) {
-        return checkFixedColumnCopyValue(
-            vector, partitionFixedWidthValueAddrs_, std::move(funcLine));
-      }));
+  RETURN_NOT_OK(withShuffleCheck(rv, "v1 after all", check));
 
   // update partition buffer base after split
   for (auto pid = 0; pid < numPartitions_; ++pid) {
@@ -1072,7 +1190,6 @@ arrow::Status BoltShuffleWriter::splitBinaryType(
       size_t isNull =
           srcRawNulls && bytedance::bolt::bits::isBitNull(srcRawNulls, rowId);
       auto stringLen = (isNull - 1) & stringView.size();
-
       // 1. copy length, update offset.
       dstLengthBase[i] = stringLen;
       valueOffset += stringLen;
@@ -1237,16 +1354,36 @@ arrow::Status BoltShuffleWriter::initColumnTypes(
 
   fixedWidthColumnCount_ = simpleColumnIndices_.size();
 
-  if (options_.shuffleCheckRatio > 0.0) {
-    fixedWidthCheckFunctions_.reserve(fixedWidthColumnCount_);
-    fixedWidthTypeNames_.reserve(fixedWidthColumnCount_);
-    for (size_t col = 0; col < fixedWidthColumnCount_; ++col) {
+  // Pre-compute the byte width of each fixed-width column's single value.
+  // Boolean is bit-packed and stored separately, so its width is recorded as 0.
+  fixedColValueSize_.reserve(fixedWidthColumnCount_);
+  for (size_t col = 0; col < fixedWidthColumnCount_; ++col) {
+    const auto colIdx = simpleColumnIndices_[col];
+    if (arrowColumnTypes_[colIdx]->id() == arrow::BooleanType::type_id) {
+      fixedColValueSize_.push_back(0);
+    } else {
+      fixedColValueSize_.push_back(
+          static_cast<uint16_t>(valueBufferSizeForFixedWidthArray(col, 1)));
+    }
+  }
+
+  if (options_.shuffleCheckRatio > 0.0 && options_.shuffleCheckMaxColumns > 0) {
+    fixedWidthCheckEntries_.clear();
+    fixedWidthCheckEntries_.reserve(fixedWidthColumnCount_);
+    for (size_t col = 0; col < fixedWidthColumnCount_ &&
+         fixedWidthCheckEntries_.size() < options_.shuffleCheckMaxColumns;
+         ++col) {
       const auto colIdx = simpleColumnIndices_[col];
       ARROW_ASSIGN_OR_RAISE(
           auto checkFn,
           createFixedColumnCheckFunction(arrowColumnTypes_[colIdx]->id()));
-      fixedWidthCheckFunctions_.push_back(checkFn);
-      fixedWidthTypeNames_.push_back(arrowColumnTypes_[colIdx]->ToString());
+      if (checkFn == nullptr) {
+        continue;
+      }
+      fixedWidthCheckEntries_.push_back(
+          {static_cast<uint32_t>(col),
+           checkFn,
+           arrowColumnTypes_[colIdx]->ToString()});
     }
   }
 
@@ -1746,6 +1883,11 @@ arrow::Status BoltShuffleWriter::resizePartitionBuffer(
     uint32_t partitionId,
     uint32_t newSize,
     bool preserveData) {
+  if (splitState_ == SplitState::kSplit) {
+    BOLT_CHECK(
+        preserveData,
+        "resizePartitionBuffer should preserve data in split state");
+  }
   for (auto i = 0; i < simpleColumnIndices_.size(); ++i) {
     auto columnType = schema_->field(simpleColumnIndices_[i])->type()->id();
     auto& buffers = partitionBuffers_[i][partitionId];
@@ -2126,12 +2268,6 @@ template arrow::Status BoltShuffleWriter::splitFixedWidthValueBuffer<
     std::vector<std::vector<std::vector<uint8_t*>>>>(
     const bytedance::bolt::RowVector& rv,
     std::vector<std::vector<std::vector<uint8_t*>>>& valueAddrs);
-template arrow::Status BoltShuffleWriter::checkFixedColumnCopyValue<
-    std::vector<std::vector<uint8_t*>>>(
-    const bytedance::bolt::RowVector& rv,
-    std::vector<std::vector<uint8_t*>>& fixedWidthValueAddrs,
-    const std::string& funcLine,
-    bool valueAddrsPointToWritePosition);
 template arrow::Status BoltShuffleWriter::splitValidityBuffer<true>(
     const bytedance::bolt::RowVector& rv);
 template arrow::Status BoltShuffleWriter::splitValidityBuffer<false>(
@@ -2178,6 +2314,8 @@ int32_t BoltShuffleWriter::calculatePreallocBufferSize(
 
 // for CompositeRowVector
 arrow::Status BoltShuffleWriter::tryEvict(int64_t) {
+  // add EvictGuard to avoid recursive evict
+  EvictGuard evictGuard{evictState_};
   if (vectorLayout_ == RowVectorLayout::kColumnar) {
     partitionWriter_->setRowFormat(false);
     for (auto pid = 0; pid < numPartitions_; ++pid) {
@@ -2278,26 +2416,27 @@ arrow::Status BoltShuffleWriter::tryEvictComposite() {
   return arrow::Status::OK();
 }
 
-arrow::MemoryPool* BoltShuffleWriter::getSpillArrowPool(
+std::shared_ptr<arrow::MemoryPool> BoltShuffleWriter::getSpillArrowPool(
     arrow::MemoryPool* pool) {
   if (dynamic_cast<BoltArrowMemoryPool*>(pool) != nullptr) {
-    // If the pool is BoltArrowMemoryPool, shuffle is offload as bolt operator
-    static std::shared_ptr<arrow::MemoryPool> spillPool =
-        std::make_shared<BoltArrowMemoryPool>(
-            bytedance::bolt::memory::spillMemoryPool());
-    return spillPool.get();
+    return std::make_shared<BoltArrowMemoryPool>(
+        bytedance::bolt::memory::spillMemoryPool());
   } else {
-    return pool;
+    return std::shared_ptr<arrow::MemoryPool>(pool, [](arrow::MemoryPool*) {});
   }
 }
 
 void BoltShuffleWriter::logShuffleCheckStats(const char* writerType) const {
-  if (options_.shuffleCheckRatio <= 0.0 || shuffleCheckCount_ <= 0) {
+  if (options_.shuffleCheckRatio <= 0.0 || shuffleCheckCount_ <= 0 ||
+      fixedWidthCheckEntries_.empty()) {
     return;
   }
   LOG(INFO) << " ShuffleWriter debug check stat: taskAttemptId="
             << options_.taskAttemptId << " writerType=" << writerType
             << " ratio=" << options_.shuffleCheckRatio
+            << " maxColumns=" << options_.shuffleCheckMaxColumns
+            << " checkedColumns=" << fixedWidthCheckEntries_.size()
+            << " fixedWidthColumnsCount=" << fixedWidthColumnCount_
             << " count=" << shuffleCheckCount_
             << " wallNanos=" << shuffleCheckTimeNanos_
             << " wallMs=" << (shuffleCheckTimeNanos_ / 1000000.0);
@@ -2311,20 +2450,23 @@ void BoltShuffleWriter::checkCopyValue(
     const std::vector<uint8_t*>& dstNulls,
     int colId,
     const std::string& name,
-    const std::string& funcLine,
-    bool valueAddrsPointToWritePosition) {
+    const std::string& funcLine) {
   const auto* srcValues = reinterpret_cast<const T*>(srcAddrs);
   const bool hasSrcNulls = (srcNulls != nullptr);
+
+  std::stringstream errorMsg;
+  errorMsg << funcLine << ": ";
+  int errorCount = 0;
 
   for (auto& pid : partitionUsed_) {
     const uint32_t baseOffset = partition2RowOffsetBase_[pid];
     const uint32_t endOffset = partition2RowOffsetBase_[pid + 1];
 
+    // dstAddrs[pid] is pre-adjusted by callers to point to the current write
+    // position, so no extra value-base offset is needed here. The validity
+    // buffer is still indexed from the partition buffer base.
     const uint32_t dstNullBase = partitionBufferBase_[pid];
-    const uint32_t dstValueBase =
-        valueAddrsPointToWritePosition ? 0 : dstNullBase;
-    const auto* dstPidBase = reinterpret_cast<const T*>(dstAddrs[pid]);
-    const auto* dstValues = dstPidBase + dstValueBase;
+    const auto* dstValues = reinterpret_cast<const T*>(dstAddrs[pid]);
 
     const uint8_t* dstNullsPid = dstNulls[pid];
     const bool hasDstNulls = (dstNullsPid != nullptr);
@@ -2341,62 +2483,79 @@ void BoltShuffleWriter::checkCopyValue(
             continue;
           }
         }
-        BOLT_CHECK(
-            sValue == dValue,
-            "{}:source column value [{}, {}][{}] = {}, null {} is not equal to dest column value {} of partition {}",
-            funcLine,
-            colId,
-            name,
-            pos + dstNullBase,
-            sValue,
-            false,
-            dValue,
-            pid);
-      }
-      continue;
-    }
-
-    for (uint32_t offset = baseOffset, pos = 0; offset < endOffset;
-         ++offset, ++pos) {
-      const uint32_t rowId = rowOffset2RowId_[offset];
-      const bool sNull =
-          hasSrcNulls && !bytedance::bolt::bits::isBitSet(srcNulls, rowId);
-      const bool dNull = hasDstNulls &&
-          !bytedance::bolt::bits::isBitSet(dstNullsPid, dstNullBase + pos);
-
-      BOLT_CHECK(
-          sNull == dNull,
-          "{}:source column null [{}, {}][{}] = {} is not equal to dest column null {} of partition {}",
-          funcLine,
-          colId,
-          name,
-          pos + dstNullBase,
-          sNull,
-          dNull,
-          pid);
-
-      if (sNull) {
-        continue;
-      }
-
-      const auto sValue = srcValues[rowId];
-      const auto dValue = dstValues[pos];
-      if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
-        if (std::isnan(sValue) && std::isnan(dValue)) {
-          continue;
+        if (sValue != dValue) {
+          errorCount++;
+          errorMsg << fmt::format(
+              "([{}, {}][{}] = {}) != (partition {}[{}] = {})",
+              colId,
+              name,
+              rowId,
+              sValue,
+              pid,
+              pos,
+              dValue);
+        }
+        if (errorCount > 50) {
+          break;
         }
       }
-      BOLT_CHECK(
-          sValue == dValue,
-          "{}:source column value [{}, {}][{}] = {}, null {} is not equal to dest column value {} of partition {}",
-          funcLine,
-          colId,
-          name,
-          pos + dstNullBase,
-          sValue,
-          sNull,
-          dValue,
-          pid);
+    } else {
+      for (uint32_t offset = baseOffset, pos = 0; offset < endOffset;
+           ++offset, ++pos) {
+        const uint32_t rowId = rowOffset2RowId_[offset];
+        const bool sNull =
+            hasSrcNulls && !bytedance::bolt::bits::isBitSet(srcNulls, rowId);
+        const bool dNull = hasDstNulls &&
+            !bytedance::bolt::bits::isBitSet(dstNullsPid, dstNullBase + pos);
+
+        if (sNull != dNull) {
+          errorCount++;
+          errorMsg << fmt::format(
+              "([{}, {}][{}] = {}) != (partition {}[{}] = {})",
+              colId,
+              name,
+              rowId,
+              sNull,
+              pid,
+              pos,
+              dNull);
+        }
+        if (errorCount > 50) {
+          break;
+        }
+        if (sNull) {
+          continue;
+        }
+
+        const auto sValue = srcValues[rowId];
+        const auto dValue = dstValues[pos];
+        if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+          if (std::isnan(sValue) && std::isnan(dValue)) {
+            continue;
+          }
+        }
+        if (sValue != dValue) {
+          errorCount++;
+          errorMsg << fmt::format(
+              "([{}, {}][{}] = {}) != (partition {}[{}] = {})",
+              colId,
+              name,
+              rowId,
+              sValue,
+              pid,
+              pos,
+              dValue);
+        }
+        if (errorCount > 50) {
+          break;
+        }
+      }
+    }
+    if (errorCount > 0) {
+      errorMsg << std::endl;
+      LOG(ERROR) << errorMsg.str();
+      throw std::runtime_error(
+          std::to_string(pid) + ":" + std::to_string(colId));
     }
   }
 }
@@ -2409,17 +2568,9 @@ void BoltShuffleWriter::checkCopyValueTyped(
     const std::vector<uint8_t*>& dstNulls,
     int colId,
     const std::string& name,
-    const std::string& funcLine,
-    bool valueAddrsPointToWritePosition) {
+    const std::string& funcLine) {
   checkCopyValue<T>(
-      srcAddrs,
-      srcNulls,
-      dstAddrs,
-      dstNulls,
-      colId,
-      name,
-      funcLine,
-      valueAddrsPointToWritePosition);
+      srcAddrs, srcNulls, dstAddrs, dstNulls, colId, name, funcLine);
 }
 
 arrow::Result<BoltShuffleWriter::FixedColumnCheckFunction>
@@ -2464,33 +2615,28 @@ BoltShuffleWriter::createFixedColumnCheckFunction(
   }
 }
 
-template <typename T>
 arrow::Status BoltShuffleWriter::checkFixedColumnCopyValue(
     const bytedance::bolt::RowVector& rv,
-    T& fixedWidthValueAddrs,
-    const std::string& funcLine,
-    bool valueAddrsPointToWritePosition) {
-  for (auto col = 0; col < fixedWidthColumnCount_; ++col) {
+    const std::vector<std::vector<uint8_t*>>& fixedWidthValueAddrs,
+    const std::string& funcLine) {
+  for (size_t i = 0; i < fixedWidthCheckEntries_.size(); ++i) {
+    const auto& entry = fixedWidthCheckEntries_[i];
+    const auto col = entry.col;
     const auto colIdx = simpleColumnIndices_[col];
     auto& column = rv.childAt(colIdx);
     const uint8_t* srcAddr = (const uint8_t*)column->valuesAsVoid();
     auto* srcNulls =
         column->nulls() == nullptr ? nullptr : column->nulls()->as<uint8_t>();
-    const auto& dstAddrs = fixedWidthValueAddrs[col];
+    const auto& dstAddrs = fixedWidthValueAddrs[i];
     const auto& dstNulls = partitionValidityAddrs_[col];
-    const auto checkFn = fixedWidthCheckFunctions_[col];
-    if (checkFn == nullptr) {
-      continue;
-    }
-    (this->*checkFn)(
+    (this->*entry.checkFn)(
         srcAddr,
         srcNulls,
         dstAddrs,
         dstNulls,
         colIdx,
-        fixedWidthTypeNames_[col],
-        funcLine,
-        valueAddrsPointToWritePosition);
+        entry.typeName,
+        funcLine);
   }
   return arrow::Status::OK();
 }
